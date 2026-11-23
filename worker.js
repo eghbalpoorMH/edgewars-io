@@ -713,11 +713,10 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.6.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.7.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
-        <button class="icon-btn" id="btn-open-feedback">💬 ثبت نظر</button>
         <button class="icon-btn" id="btn-start-mute">🔊 Sound ON</button>
       </div>
     </div>
@@ -860,30 +859,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
     </div>
     <button class="btn btn-primary" id="btn-victory-lobby">🔄 Back to Room Lobby</button>
     <button class="btn btn-pink" id="btn-victory-menu" style="width:100%;">🏠 Main Menu</button>
-  </div>
-</div>
-
-<!-- Quick Feedback Modal -->
-<div id="feedback-modal" class="overlay-screen hidden">
-  <div class="panel" style="max-width:440px;">
-    <div class="header-row" style="margin-bottom:12px;">
-      <div class="logo-wrap">
-        <h1 style="font-size:1.35rem;">💬 ثبت نظر سریع</h1>
-        <p>نظرتان مستقیماً در داشبورد سازنده نمایش داده می‌شود</p>
-      </div>
-      <button class="icon-btn" id="btn-close-feedback">✕</button>
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="fb-tags">
-      <button class="icon-btn fb-tag active" data-tag="😍 عالی">😍 عالی</button>
-      <button class="icon-btn fb-tag" data-tag="🔥 جذاب">🔥 جذاب</button>
-      <button class="icon-btn fb-tag" data-tag="💡 پیشنهاد">💡 پیشنهاد</button>
-      <button class="icon-btn fb-tag" data-tag="🐛 باگ">🐛 باگ</button>
-    </div>
-    <div class="input-group" style="margin-bottom:10px;">
-      <input type="text" id="fb-name" maxlength="20" placeholder="نام شما (اختیاری)">
-    </div>
-    <textarea id="fb-msg" rows="3" maxlength="300" placeholder="نظر، پیشنهاد یا گزارش خود را بنویسید..." style="width:100%;background:rgba(7,11,20,0.85);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 12px;color:#fff;font-family:inherit;font-size:0.9rem;margin-bottom:12px;resize:none;user-select:text;-webkit-user-select:text;"></textarea>
-    <button class="btn btn-primary" id="btn-send-feedback" style="margin-bottom:0;">ارسال نظر 🚀</button>
   </div>
 </div>
 
@@ -1546,12 +1521,8 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
     if (components.length <= 1) return;
     let keepComp = components[0];
-    if (anchorIdx !== -1) {
-      const anchored = components.find((c) => c.includes(anchorIdx));
-      if (anchored) keepComp = anchored;
-      else for (const c of components) if (c.length > keepComp.length) keepComp = c;
-    } else {
-      for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    for (const c of components) {
+      if (c.length > keepComp.length) keepComp = c;
     }
     const keepSet = new Set(keepComp);
     for (const idx of owned) {
@@ -1818,11 +1789,17 @@ const HTML_CONTENT = `<!DOCTYPE html>
     const t0 = performance.now();
     const me = state.me;
 
+    const myCells = [];
+    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+      if (territory[i] === state.playerId) myCells.push(i);
+    }
+
     const payload = {
       roomCode: state.mode === 'private' ? state.roomCode : (state.roomCode.startsWith('PUBLIC-') ? state.roomCode : 'PUBLIC'),
       mode: state.mode,
       botsEnabled: state.botsEnabled,
       spawnRequest: !!state.needsSpawnSync,
+      myCells,
       player: {
         id: state.playerId,
         name: me.name,
@@ -1962,17 +1939,21 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
       rebuildTrailGrid();
 
-      // Apply full authoritative territory snapshot from server
+      // Apply full authoritative territory snapshot from server (never wipe local player's cells to null across Edge isolates)
       if (Array.isArray(data.territoryOwners)) {
-        const pendingSet = new Set(state.pendingNewCells);
         for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-          if (!pendingSet.has(i)) territory[i] = null;
+          if (territory[i] !== state.playerId) territory[i] = null;
         }
         for (const [cellIndex, ownerId] of data.territoryOwners) {
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
-            territory[cellIndex] = ownerId;
+            if (ownerId && ownerId !== state.playerId) {
+              territory[cellIndex] = ownerId;
+            } else if (ownerId === state.playerId) {
+              territory[cellIndex] = state.playerId;
+            }
           }
         }
+        pruneLocalDisconnectedTerritory(state.playerId);
       }
       // Client invariant guard: alive player must always own at least their 5x5 base
       if (state.me && state.me.alive) {
@@ -2659,42 +2640,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     sfx.playClick();
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
-    let selectedFbTag = '😍 عالی';
-  document.querySelectorAll('.fb-tag').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
-      btn.style.borderColor = 'var(--accent-cyan)';
-      selectedFbTag = btn.dataset.tag;
-    });
-  });
-
-  document.getElementById('btn-open-feedback').addEventListener('click', () => {
-    sfx.playClick();
-    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
-    document.getElementById('feedback-modal').classList.remove('hidden');
-  });
-  document.getElementById('btn-close-feedback').addEventListener('click', () => {
-    document.getElementById('feedback-modal').classList.add('hidden');
-  });
-  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
-    const msg = document.getElementById('fb-msg').value.trim();
-    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
-    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
-    try {
-      await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
-      });
-      document.getElementById('fb-msg').value = '';
-      document.getElementById('feedback-modal').classList.add('hidden');
-      showToast('نظر شما با موفقیت ثبت شد! 🙏');
-    } catch (_e) {
-      showToast('خطا در ارسال نظر');
-    }
-  });
-
-  loadGlobalLeaderboard();
+    loadGlobalLeaderboard();
   });
 
   function updateMuteButtons() {
@@ -2724,41 +2670,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
     document.getElementById('invite-banner').classList.remove('hidden');
     openLobby(clean);
   }
-
-  let selectedFbTag = '😍 عالی';
-  document.querySelectorAll('.fb-tag').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
-      btn.style.borderColor = 'var(--accent-cyan)';
-      selectedFbTag = btn.dataset.tag;
-    });
-  });
-
-  document.getElementById('btn-open-feedback').addEventListener('click', () => {
-    sfx.playClick();
-    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
-    document.getElementById('feedback-modal').classList.remove('hidden');
-  });
-  document.getElementById('btn-close-feedback').addEventListener('click', () => {
-    document.getElementById('feedback-modal').classList.add('hidden');
-  });
-  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
-    const msg = document.getElementById('fb-msg').value.trim();
-    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
-    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
-    try {
-      await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
-      });
-      document.getElementById('fb-msg').value = '';
-      document.getElementById('feedback-modal').classList.add('hidden');
-      showToast('نظر شما با موفقیت ثبت شد! 🙏');
-    } catch (_e) {
-      showToast('خطا در ارسال نظر');
-    }
-  });
 
   loadGlobalLeaderboard();
 })();
@@ -2797,9 +2708,8 @@ const BOT_SKINS = [
 // In-memory isolate cache for ultra-low latency
 const rooms = new Map();
 let memoryLeaderboard = [];
-let memoryFeedback = [];
 
-const APP_VERSION = 'v1.6.0';
+const APP_VERSION = 'v1.7.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3117,14 +3027,8 @@ function pruneDisconnectedTerritory(room, ownerId, anchorIdx = -1) {
   if (components.length <= 1) return;
 
   let keepComp = components[0];
-  if (anchorIdx !== -1) {
-    const anchored = components.find((c) => c.includes(anchorIdx));
-    if (anchored) keepComp = anchored;
-    else {
-      for (const c of components) if (c.length > keepComp.length) keepComp = c;
-    }
-  } else {
-    for (const c of components) if (c.length > keepComp.length) keepComp = c;
+  for (const c of components) {
+    if (c.length > keepComp.length) keepComp = c;
   }
 
   const keepSet = new Set(keepComp);
@@ -3582,6 +3486,14 @@ async function handleSync(request) {
       });
     }
 
+    if (!body.spawnRequest && Array.isArray(body.myCells) && p.alive !== false) {
+      for (const idx of body.myCells) {
+        if (typeof idx === 'number' && idx >= 0 && idx < GRID_SIZE * GRID_SIZE && !room.territory.has(idx)) {
+          room.territory.set(idx, p.id);
+        }
+      }
+    }
+
     if (!body.spawnRequest && Array.isArray(body.newCells)) {
       telemetry.totalCellsCapturedToday += body.newCells.length;
       for (const idx of body.newCells) {
@@ -3805,8 +3717,7 @@ function handleStats(env) {
     totalCellsCapturedToday: telemetry.totalCellsCapturedToday,
     botArchetypes,
     history: telemetry.history,
-    rooms: anonymizedRooms,
-    feedbacks: memoryFeedback.slice(0, 50)
+    rooms: anonymizedRooms
   }), {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
   });
@@ -3996,16 +3907,6 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
       </table>
     </div>
   </div>
-
-  <div class="box" style="margin-top:16px;">
-    <div class="box-title">
-      <span>💬 نظرات و بازخوردهای بازیکنان (Player Feedback)</span>
-      <span style="font-size:0.75rem;color:var(--muted);" id="fb-count">0 نظر</span>
-    </div>
-    <div id="fb-list" style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;">
-      <div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -4120,20 +4021,6 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
           </tr>
         \`).join('');
       }
-      const fbList = document.getElementById('fb-list');
-      const fbs = d.feedbacks || [];
-      document.getElementById('fb-count').textContent = \`\${fbs.length} نظر\`;
-      fbList.innerHTML = fbs.length === 0
-        ? '<div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>'
-        : fbs.map((f) => \`
-          <div style="background:rgba(7,11,20,0.6);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;font-size:0.82rem;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-              <strong>\${f.name} <span class="badge badge-play">\${f.tag}</span></strong>
-              <span style="color:var(--muted);font-size:0.72rem;">\${new Date(f.t).toLocaleTimeString('fa-IR')}</span>
-            </div>
-            <div style="color:#e2e8f0;line-height:1.45;">\${f.message}</div>
-          </div>
-        \`).join('');
     } catch (_e) {}
   }
 
@@ -4157,21 +4044,6 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === '/api/stats' && request.method === 'GET') {
     return handleStats(env);
-  }
-  if (url.pathname === '/api/feedback' && request.method === 'POST') {
-    try {
-      const fb = await request.json();
-      memoryFeedback.unshift({
-        name: String(fb.name || 'ناشناس').slice(0, 20),
-        tag: String(fb.tag || '💬').slice(0, 16),
-        message: String(fb.message || '').slice(0, 300),
-        t: Date.now()
-      });
-      if (memoryFeedback.length > 200) memoryFeedback.length = 200;
-      return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (_e) {
-      return new Response(JSON.stringify({ error: 'Bad request' }), { status: 400 });
-    }
   }
   if (url.pathname === '/dashboard') {
     return new Response(DASHBOARD_HTML_CONTENT, {
