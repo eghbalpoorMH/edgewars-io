@@ -109,12 +109,13 @@
 <div class="container">
   <div class="topbar">
     <div class="title-wrap">
-      <h1>EdgeWars.io — داشبورد مانیتورینگ و آمار زنده</h1>
-      <p>گزارش لحظه‌ای اتاق‌ها، بازیکنان و نبردها (بدون نمایش کد اتاق‌های خصوصی و اطلاعات حساس)</p>
+      <h1>EdgeWars.io — داشبورد مانیتورینگ و آمار زنده <span id="dash-version" style="font-size:0.85rem;color:var(--cyan);">v1.4.0</span></h1>
+      <p id="dash-storage-status">در حال بررسی وضعیت ذخیره‌سازی...</p>
     </div>
     <div class="actions">
       <span class="live-pill"><span class="dot"></span> LIVE 2s</span>
       <button class="btn" id="btn-refresh">🔄 بروزرسانی</button>
+      <a class="btn" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener">⭐ GitHub</a>
       <a class="btn" href="/">🎮 ورود به بازی</a>
     </div>
   </div>
@@ -181,6 +182,16 @@
       </table>
     </div>
   </div>
+
+  <div class="box" style="margin-top:16px;">
+    <div class="box-title">
+      <span>💬 نظرات و بازخوردهای بازیکنان (Player Feedback)</span>
+      <span style="font-size:0.75rem;color:var(--muted);" id="fb-count">0 نظر</span>
+    </div>
+    <div id="fb-list" style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;">
+      <div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -241,6 +252,12 @@
       if (!res.ok) return;
       const d = await res.json();
 
+      if (d.version) document.getElementById('dash-version').textContent = d.version;
+      const sinceStr = d.bootedAt ? new Date(d.bootedAt).toLocaleString('fa-IR') : '--';
+      document.getElementById('dash-storage-status').textContent = d.kvConnected
+        ? `🟢 متصل به Edge KV (پایدار) • آمار از: ${sinceStr}`
+        : `🟡 حافظه موقت نود لبه (In-Memory — با انتشار نسخه جدید ریست می‌شود) • آمار از: ${sinceStr}`;
+
       document.getElementById('kpi-online').textContent = d.onlinePlayersNow;
       document.getElementById('kpi-online-sub').textContent =
         `در بازی: ${d.playingPlayersNow} • در لابی: ${d.lobbyPlayersNow} • اوج امروز: ${d.peakConcurrentToday}`;
@@ -289,6 +306,20 @@
           </tr>
         `).join('');
       }
+      const fbList = document.getElementById('fb-list');
+      const fbs = d.feedbacks || [];
+      document.getElementById('fb-count').textContent = `${fbs.length} نظر`;
+      fbList.innerHTML = fbs.length === 0
+        ? '<div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>'
+        : fbs.map((f) => `
+          <div style="background:rgba(7,11,20,0.6);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>${f.name} <span class="badge badge-play">${f.tag}</span></strong>
+              <span style="color:var(--muted);font-size:0.72rem;">${new Date(f.t).toLocaleTimeString('fa-IR')}</span>
+            </div>
+            <div style="color:#e2e8f0;line-height:1.45;">${f.message}</div>
+          </div>
+        `).join('');
     } catch (_e) {}
   }
 

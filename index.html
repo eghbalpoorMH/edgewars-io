@@ -260,6 +260,12 @@
     transform: scale(1.1);
   }
 
+  .color-swatch.taken {
+    opacity: 0.22;
+    pointer-events: none;
+    position: relative;
+  }
+
   /* Buttons */
   .btn {
     border: none;
@@ -701,9 +707,13 @@
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge Ready</p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.4.0</span></p>
       </div>
-      <button class="icon-btn" id="btn-start-mute">🔊 Sound ON</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
+        <button class="icon-btn" id="btn-open-feedback">💬 ثبت نظر</button>
+        <button class="icon-btn" id="btn-start-mute">🔊 Sound ON</button>
+      </div>
     </div>
 
     <div class="start-grid">
@@ -721,11 +731,6 @@
           <span id="selected-skin-name" style="color:var(--accent-gold);">Neon Cyber Cube</span>
         </div>
         <div class="skin-grid" id="skin-grid"></div>
-
-        <div class="section-label">
-          <span>Select Color (۲۰ رنگ)</span>
-        </div>
-        <div class="color-palette" id="start-color-palette"></div>
 
         <div id="invite-banner" class="invite-banner hidden">
           <div>
@@ -849,6 +854,30 @@
     </div>
     <button class="btn btn-primary" id="btn-victory-lobby">🔄 Back to Room Lobby</button>
     <button class="btn btn-pink" id="btn-victory-menu" style="width:100%;">🏠 Main Menu</button>
+  </div>
+</div>
+
+<!-- Quick Feedback Modal -->
+<div id="feedback-modal" class="overlay-screen hidden">
+  <div class="panel" style="max-width:440px;">
+    <div class="header-row" style="margin-bottom:12px;">
+      <div class="logo-wrap">
+        <h1 style="font-size:1.35rem;">💬 ثبت نظر سریع</h1>
+        <p>نظرتان مستقیماً در داشبورد سازنده نمایش داده می‌شود</p>
+      </div>
+      <button class="icon-btn" id="btn-close-feedback">✕</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="fb-tags">
+      <button class="icon-btn fb-tag active" data-tag="😍 عالی">😍 عالی</button>
+      <button class="icon-btn fb-tag" data-tag="🔥 جذاب">🔥 جذاب</button>
+      <button class="icon-btn fb-tag" data-tag="💡 پیشنهاد">💡 پیشنهاد</button>
+      <button class="icon-btn fb-tag" data-tag="🐛 باگ">🐛 باگ</button>
+    </div>
+    <div class="input-group" style="margin-bottom:10px;">
+      <input type="text" id="fb-name" maxlength="20" placeholder="نام شما (اختیاری)">
+    </div>
+    <textarea id="fb-msg" rows="3" maxlength="300" placeholder="نظر، پیشنهاد یا گزارش خود را بنویسید..." style="width:100%;background:rgba(7,11,20,0.85);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 12px;color:#fff;font-family:inherit;font-size:0.9rem;margin-bottom:12px;resize:none;user-select:text;-webkit-user-select:text;"></textarea>
+    <button class="btn btn-primary" id="btn-send-feedback" style="margin-bottom:0;">ارسال نظر 🚀</button>
   </div>
 </div>
 
@@ -1345,7 +1374,9 @@
     return ent;
   }
 
-  function claimStartingBlock(ent, cx, cy) {
+  function claimStartingBlock(ent, cx, cy, pushToServer = false) {
+    ent.baseGx = cx;
+    ent.baseGy = cy;
     for (let y = cy - 2; y <= cy + 2; y++) {
       for (let x = cx - 2; x <= cx + 2; x++) {
         if (inBounds(x, y)) {
@@ -1353,6 +1384,9 @@
           if (territory[idx] === null || territory[idx] === ent.id) {
             territory[idx] = ent.id;
             capturePulse[idx] = 1.0;
+            if (pushToServer && ent.id === state.playerId) {
+              state.pendingNewCells.push(idx);
+            }
           }
         }
       }
@@ -1439,8 +1473,69 @@
         sfx.playCapture(newlyClaimed.length);
         spawnPopup(ent.x, ent.y - 24, `+${newlyClaimed.length} TILES!`, ent.skin.color);
       }
+      // Enforce single connected territory component for all entities
+      for (const other of state.entities.values()) {
+        if (!other.alive) continue;
+        const ogx = Math.floor(other.x / CELL_SIZE);
+        const ogy = Math.floor(other.y / CELL_SIZE);
+        const oIdx = inBounds(ogx, ogy) ? cellIdx(ogx, ogy) : -1;
+        pruneLocalDisconnectedTerritory(other.id, oIdx);
+      }
     }
     return newlyClaimed.length;
+  }
+
+  function pruneLocalDisconnectedTerritory(ownerId, anchorIdx = -1) {
+    const owned = [];
+    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+      if (territory[i] === ownerId) owned.push(i);
+    }
+    if (owned.length <= 1) return;
+
+    const ownedSet = new Set(owned);
+    const visited = new Set();
+    const components = [];
+
+    for (const start of owned) {
+      if (visited.has(start)) continue;
+      const comp = [];
+      const queue = [start];
+      visited.add(start);
+      let head = 0;
+      while (head < queue.length) {
+        const curr = queue[head++];
+        comp.push(curr);
+        const cx = curr % GRID_SIZE;
+        const cy = (curr / GRID_SIZE) | 0;
+        const neighbors = [
+          cx > 0 ? curr - 1 : -1,
+          cx < GRID_SIZE - 1 ? curr + 1 : -1,
+          cy > 0 ? curr - GRID_SIZE : -1,
+          cy < GRID_SIZE - 1 ? curr + GRID_SIZE : -1
+        ];
+        for (const n of neighbors) {
+          if (n !== -1 && ownedSet.has(n) && !visited.has(n)) {
+            visited.add(n);
+            queue.push(n);
+          }
+        }
+      }
+      components.push(comp);
+    }
+
+    if (components.length <= 1) return;
+    let keepComp = components[0];
+    if (anchorIdx !== -1) {
+      const anchored = components.find((c) => c.includes(anchorIdx));
+      if (anchored) keepComp = anchored;
+      else for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    } else {
+      for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    }
+    const keepSet = new Set(keepComp);
+    for (const idx of owned) {
+      if (!keepSet.has(idx)) territory[idx] = null;
+    }
   }
 
   function eliminateEntity(victim, killer, reason) {
@@ -1663,6 +1758,7 @@
   async function syncWithEdge() {
     if (!state.running || state.offlineMode || state.syncPending) return;
     state.syncPending = true;
+    const seq = state.matchSeq || 0;
     const t0 = performance.now();
     const me = state.me;
 
@@ -1676,6 +1772,8 @@
         name: me.name,
         skinId: me.skin.id,
         color: state.selectedColor,
+        baseGx: me.baseGx,
+        baseGy: me.baseGy,
         x: Math.round(me.x),
         y: Math.round(me.y),
         dx: me.dx,
@@ -1698,6 +1796,7 @@
       });
       if (!res.ok) throw new Error('Sync HTTP ' + res.status);
       const data = await res.json();
+      if (seq !== state.matchSeq || !state.running) return;
       state.pingMs = Math.round(performance.now() - t0);
       document.getElementById('hud-ping').textContent = `${state.pingMs}ms`;
 
@@ -1706,17 +1805,15 @@
         document.getElementById('hud-room-badge').textContent = data.roomCode;
       }
 
-      if (state.needsSpawnSync) {
+      if (state.needsSpawnSync && data.assignedSpawn && state.me) {
         state.needsSpawnSync = false;
-        if (data.assignedSpawn && state.me) {
-          territory.fill(null);
-          state.me.x = data.assignedSpawn.x;
-          state.me.y = data.assignedSpawn.y;
-          state.me.trail = [];
-          state.camera.x = data.assignedSpawn.x;
-          state.camera.y = data.assignedSpawn.y;
-          claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy);
-        }
+        territory.fill(null);
+        state.me.x = data.assignedSpawn.x;
+        state.me.y = data.assignedSpawn.y;
+        state.me.trail = [];
+        state.camera.x = data.assignedSpawn.x;
+        state.camera.y = data.assignedSpawn.y;
+        claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
       }
 
       if (data.status === 'finished' && data.winner) {
@@ -1750,6 +1847,10 @@
       const nowMs = performance.now();
       for (const rp of data.players || []) {
         if (rp.id === state.playerId) {
+          if (rp.color && state.me) {
+            state.selectedColor = rp.color;
+            state.me.skin = { ...state.me.skin, color: rp.color };
+          }
           if (rp.alive === false && state.me && state.me.alive) {
             eliminateEntity(state.me, null, rp.killedBy ? `Trail severed by ${rp.killedBy}!` : 'Your trail was severed!');
           }
@@ -1815,6 +1916,18 @@
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
             territory[cellIndex] = ownerId;
           }
+        }
+      }
+      // Client invariant guard: alive player must always own at least their 5x5 base
+      if (state.me && state.me.alive) {
+        let myCells = 0;
+        for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+          if (territory[i] === state.playerId) { myCells++; break; }
+        }
+        if (myCells === 0) {
+          const bx = state.me.baseGx !== undefined ? state.me.baseGx : Math.floor(state.me.x / CELL_SIZE);
+          const by = state.me.baseGy !== undefined ? state.me.baseGy : Math.floor(state.me.y / CELL_SIZE);
+          claimStartingBlock(state.me, bx, by, true);
         }
       }
     } catch (_err) {
@@ -2211,6 +2324,8 @@
     const nick = (document.getElementById('input-nickname').value || 'CyberPilot').trim().slice(0, 14);
     state.mode = mode;
     state.roomCode = roomCode || 'PUBLIC';
+    state.matchSeq = (state.matchSeq || 0) + 1;
+    state.syncPending = false;
     state.needsSpawnSync = true;
     state.botsEnabled = document.getElementById('chk-bots').checked;
     state.offlineMode = false;
@@ -2280,7 +2395,6 @@
     });
   }
 
-  renderColorPalette('start-color-palette');
   renderColorPalette('lobby-color-palette', () => pollLobby());
 
   const lobbySkinGrid = document.getElementById('lobby-skin-grid');
@@ -2366,6 +2480,13 @@
         updateWinDesc();
       }
 
+      const takenColors = new Set(
+        (data.players || []).filter((p) => p.id !== state.playerId && p.color).map((p) => p.color)
+      );
+      document.querySelectorAll('#lobby-color-palette .color-swatch').forEach((sw) => {
+        sw.classList.toggle('taken', takenColors.has(sw.title));
+      });
+
       document.getElementById('lobby-player-count').textContent = `${(data.players || []).length} / 20`;
       document.getElementById('lobby-players-list').innerHTML = (data.players || []).map((p) => {
         const sk = SKINS.find((s) => s.id === p.skinId) || SKINS[0];
@@ -2447,7 +2568,42 @@
     sfx.playClick();
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
-    loadGlobalLeaderboard();
+    let selectedFbTag = '😍 عالی';
+  document.querySelectorAll('.fb-tag').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
+      btn.style.borderColor = 'var(--accent-cyan)';
+      selectedFbTag = btn.dataset.tag;
+    });
+  });
+
+  document.getElementById('btn-open-feedback').addEventListener('click', () => {
+    sfx.playClick();
+    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
+    document.getElementById('feedback-modal').classList.remove('hidden');
+  });
+  document.getElementById('btn-close-feedback').addEventListener('click', () => {
+    document.getElementById('feedback-modal').classList.add('hidden');
+  });
+  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
+    const msg = document.getElementById('fb-msg').value.trim();
+    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
+    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
+      });
+      document.getElementById('fb-msg').value = '';
+      document.getElementById('feedback-modal').classList.add('hidden');
+      showToast('نظر شما با موفقیت ثبت شد! 🙏');
+    } catch (_e) {
+      showToast('خطا در ارسال نظر');
+    }
+  });
+
+  loadGlobalLeaderboard();
   });
 
   function updateMuteButtons() {
@@ -2477,6 +2633,41 @@
     document.getElementById('invite-banner').classList.remove('hidden');
     openLobby(clean);
   }
+
+  let selectedFbTag = '😍 عالی';
+  document.querySelectorAll('.fb-tag').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
+      btn.style.borderColor = 'var(--accent-cyan)';
+      selectedFbTag = btn.dataset.tag;
+    });
+  });
+
+  document.getElementById('btn-open-feedback').addEventListener('click', () => {
+    sfx.playClick();
+    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
+    document.getElementById('feedback-modal').classList.remove('hidden');
+  });
+  document.getElementById('btn-close-feedback').addEventListener('click', () => {
+    document.getElementById('feedback-modal').classList.add('hidden');
+  });
+  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
+    const msg = document.getElementById('fb-msg').value.trim();
+    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
+    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
+      });
+      document.getElementById('fb-msg').value = '';
+      document.getElementById('feedback-modal').classList.add('hidden');
+      showToast('نظر شما با موفقیت ثبت شد! 🙏');
+    } catch (_e) {
+      showToast('خطا در ارسال نظر');
+    }
+  });
 
   loadGlobalLeaderboard();
 })();

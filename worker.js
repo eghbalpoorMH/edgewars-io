@@ -266,6 +266,12 @@ const HTML_CONTENT = `<!DOCTYPE html>
     transform: scale(1.1);
   }
 
+  .color-swatch.taken {
+    opacity: 0.22;
+    pointer-events: none;
+    position: relative;
+  }
+
   /* Buttons */
   .btn {
     border: none;
@@ -707,9 +713,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge Ready</p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.4.0</span></p>
       </div>
-      <button class="icon-btn" id="btn-start-mute">🔊 Sound ON</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
+        <button class="icon-btn" id="btn-open-feedback">💬 ثبت نظر</button>
+        <button class="icon-btn" id="btn-start-mute">🔊 Sound ON</button>
+      </div>
     </div>
 
     <div class="start-grid">
@@ -727,11 +737,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
           <span id="selected-skin-name" style="color:var(--accent-gold);">Neon Cyber Cube</span>
         </div>
         <div class="skin-grid" id="skin-grid"></div>
-
-        <div class="section-label">
-          <span>Select Color (۲۰ رنگ)</span>
-        </div>
-        <div class="color-palette" id="start-color-palette"></div>
 
         <div id="invite-banner" class="invite-banner hidden">
           <div>
@@ -855,6 +860,30 @@ const HTML_CONTENT = `<!DOCTYPE html>
     </div>
     <button class="btn btn-primary" id="btn-victory-lobby">🔄 Back to Room Lobby</button>
     <button class="btn btn-pink" id="btn-victory-menu" style="width:100%;">🏠 Main Menu</button>
+  </div>
+</div>
+
+<!-- Quick Feedback Modal -->
+<div id="feedback-modal" class="overlay-screen hidden">
+  <div class="panel" style="max-width:440px;">
+    <div class="header-row" style="margin-bottom:12px;">
+      <div class="logo-wrap">
+        <h1 style="font-size:1.35rem;">💬 ثبت نظر سریع</h1>
+        <p>نظرتان مستقیماً در داشبورد سازنده نمایش داده می‌شود</p>
+      </div>
+      <button class="icon-btn" id="btn-close-feedback">✕</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="fb-tags">
+      <button class="icon-btn fb-tag active" data-tag="😍 عالی">😍 عالی</button>
+      <button class="icon-btn fb-tag" data-tag="🔥 جذاب">🔥 جذاب</button>
+      <button class="icon-btn fb-tag" data-tag="💡 پیشنهاد">💡 پیشنهاد</button>
+      <button class="icon-btn fb-tag" data-tag="🐛 باگ">🐛 باگ</button>
+    </div>
+    <div class="input-group" style="margin-bottom:10px;">
+      <input type="text" id="fb-name" maxlength="20" placeholder="نام شما (اختیاری)">
+    </div>
+    <textarea id="fb-msg" rows="3" maxlength="300" placeholder="نظر، پیشنهاد یا گزارش خود را بنویسید..." style="width:100%;background:rgba(7,11,20,0.85);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 12px;color:#fff;font-family:inherit;font-size:0.9rem;margin-bottom:12px;resize:none;user-select:text;-webkit-user-select:text;"></textarea>
+    <button class="btn btn-primary" id="btn-send-feedback" style="margin-bottom:0;">ارسال نظر 🚀</button>
   </div>
 </div>
 
@@ -1351,7 +1380,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
     return ent;
   }
 
-  function claimStartingBlock(ent, cx, cy) {
+  function claimStartingBlock(ent, cx, cy, pushToServer = false) {
+    ent.baseGx = cx;
+    ent.baseGy = cy;
     for (let y = cy - 2; y <= cy + 2; y++) {
       for (let x = cx - 2; x <= cx + 2; x++) {
         if (inBounds(x, y)) {
@@ -1359,6 +1390,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
           if (territory[idx] === null || territory[idx] === ent.id) {
             territory[idx] = ent.id;
             capturePulse[idx] = 1.0;
+            if (pushToServer && ent.id === state.playerId) {
+              state.pendingNewCells.push(idx);
+            }
           }
         }
       }
@@ -1445,8 +1479,69 @@ const HTML_CONTENT = `<!DOCTYPE html>
         sfx.playCapture(newlyClaimed.length);
         spawnPopup(ent.x, ent.y - 24, \`+\${newlyClaimed.length} TILES!\`, ent.skin.color);
       }
+      // Enforce single connected territory component for all entities
+      for (const other of state.entities.values()) {
+        if (!other.alive) continue;
+        const ogx = Math.floor(other.x / CELL_SIZE);
+        const ogy = Math.floor(other.y / CELL_SIZE);
+        const oIdx = inBounds(ogx, ogy) ? cellIdx(ogx, ogy) : -1;
+        pruneLocalDisconnectedTerritory(other.id, oIdx);
+      }
     }
     return newlyClaimed.length;
+  }
+
+  function pruneLocalDisconnectedTerritory(ownerId, anchorIdx = -1) {
+    const owned = [];
+    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+      if (territory[i] === ownerId) owned.push(i);
+    }
+    if (owned.length <= 1) return;
+
+    const ownedSet = new Set(owned);
+    const visited = new Set();
+    const components = [];
+
+    for (const start of owned) {
+      if (visited.has(start)) continue;
+      const comp = [];
+      const queue = [start];
+      visited.add(start);
+      let head = 0;
+      while (head < queue.length) {
+        const curr = queue[head++];
+        comp.push(curr);
+        const cx = curr % GRID_SIZE;
+        const cy = (curr / GRID_SIZE) | 0;
+        const neighbors = [
+          cx > 0 ? curr - 1 : -1,
+          cx < GRID_SIZE - 1 ? curr + 1 : -1,
+          cy > 0 ? curr - GRID_SIZE : -1,
+          cy < GRID_SIZE - 1 ? curr + GRID_SIZE : -1
+        ];
+        for (const n of neighbors) {
+          if (n !== -1 && ownedSet.has(n) && !visited.has(n)) {
+            visited.add(n);
+            queue.push(n);
+          }
+        }
+      }
+      components.push(comp);
+    }
+
+    if (components.length <= 1) return;
+    let keepComp = components[0];
+    if (anchorIdx !== -1) {
+      const anchored = components.find((c) => c.includes(anchorIdx));
+      if (anchored) keepComp = anchored;
+      else for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    } else {
+      for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    }
+    const keepSet = new Set(keepComp);
+    for (const idx of owned) {
+      if (!keepSet.has(idx)) territory[idx] = null;
+    }
   }
 
   function eliminateEntity(victim, killer, reason) {
@@ -1669,6 +1764,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
   async function syncWithEdge() {
     if (!state.running || state.offlineMode || state.syncPending) return;
     state.syncPending = true;
+    const seq = state.matchSeq || 0;
     const t0 = performance.now();
     const me = state.me;
 
@@ -1682,6 +1778,8 @@ const HTML_CONTENT = `<!DOCTYPE html>
         name: me.name,
         skinId: me.skin.id,
         color: state.selectedColor,
+        baseGx: me.baseGx,
+        baseGy: me.baseGy,
         x: Math.round(me.x),
         y: Math.round(me.y),
         dx: me.dx,
@@ -1704,6 +1802,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
       });
       if (!res.ok) throw new Error('Sync HTTP ' + res.status);
       const data = await res.json();
+      if (seq !== state.matchSeq || !state.running) return;
       state.pingMs = Math.round(performance.now() - t0);
       document.getElementById('hud-ping').textContent = \`\${state.pingMs}ms\`;
 
@@ -1712,17 +1811,15 @@ const HTML_CONTENT = `<!DOCTYPE html>
         document.getElementById('hud-room-badge').textContent = data.roomCode;
       }
 
-      if (state.needsSpawnSync) {
+      if (state.needsSpawnSync && data.assignedSpawn && state.me) {
         state.needsSpawnSync = false;
-        if (data.assignedSpawn && state.me) {
-          territory.fill(null);
-          state.me.x = data.assignedSpawn.x;
-          state.me.y = data.assignedSpawn.y;
-          state.me.trail = [];
-          state.camera.x = data.assignedSpawn.x;
-          state.camera.y = data.assignedSpawn.y;
-          claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy);
-        }
+        territory.fill(null);
+        state.me.x = data.assignedSpawn.x;
+        state.me.y = data.assignedSpawn.y;
+        state.me.trail = [];
+        state.camera.x = data.assignedSpawn.x;
+        state.camera.y = data.assignedSpawn.y;
+        claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
       }
 
       if (data.status === 'finished' && data.winner) {
@@ -1756,6 +1853,10 @@ const HTML_CONTENT = `<!DOCTYPE html>
       const nowMs = performance.now();
       for (const rp of data.players || []) {
         if (rp.id === state.playerId) {
+          if (rp.color && state.me) {
+            state.selectedColor = rp.color;
+            state.me.skin = { ...state.me.skin, color: rp.color };
+          }
           if (rp.alive === false && state.me && state.me.alive) {
             eliminateEntity(state.me, null, rp.killedBy ? \`Trail severed by \${rp.killedBy}!\` : 'Your trail was severed!');
           }
@@ -1821,6 +1922,18 @@ const HTML_CONTENT = `<!DOCTYPE html>
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
             territory[cellIndex] = ownerId;
           }
+        }
+      }
+      // Client invariant guard: alive player must always own at least their 5x5 base
+      if (state.me && state.me.alive) {
+        let myCells = 0;
+        for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+          if (territory[i] === state.playerId) { myCells++; break; }
+        }
+        if (myCells === 0) {
+          const bx = state.me.baseGx !== undefined ? state.me.baseGx : Math.floor(state.me.x / CELL_SIZE);
+          const by = state.me.baseGy !== undefined ? state.me.baseGy : Math.floor(state.me.y / CELL_SIZE);
+          claimStartingBlock(state.me, bx, by, true);
         }
       }
     } catch (_err) {
@@ -2217,6 +2330,8 @@ const HTML_CONTENT = `<!DOCTYPE html>
     const nick = (document.getElementById('input-nickname').value || 'CyberPilot').trim().slice(0, 14);
     state.mode = mode;
     state.roomCode = roomCode || 'PUBLIC';
+    state.matchSeq = (state.matchSeq || 0) + 1;
+    state.syncPending = false;
     state.needsSpawnSync = true;
     state.botsEnabled = document.getElementById('chk-bots').checked;
     state.offlineMode = false;
@@ -2286,7 +2401,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
     });
   }
 
-  renderColorPalette('start-color-palette');
   renderColorPalette('lobby-color-palette', () => pollLobby());
 
   const lobbySkinGrid = document.getElementById('lobby-skin-grid');
@@ -2372,6 +2486,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
         updateWinDesc();
       }
 
+      const takenColors = new Set(
+        (data.players || []).filter((p) => p.id !== state.playerId && p.color).map((p) => p.color)
+      );
+      document.querySelectorAll('#lobby-color-palette .color-swatch').forEach((sw) => {
+        sw.classList.toggle('taken', takenColors.has(sw.title));
+      });
+
       document.getElementById('lobby-player-count').textContent = \`\${(data.players || []).length} / 20\`;
       document.getElementById('lobby-players-list').innerHTML = (data.players || []).map((p) => {
         const sk = SKINS.find((s) => s.id === p.skinId) || SKINS[0];
@@ -2453,7 +2574,42 @@ const HTML_CONTENT = `<!DOCTYPE html>
     sfx.playClick();
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
-    loadGlobalLeaderboard();
+    let selectedFbTag = '😍 عالی';
+  document.querySelectorAll('.fb-tag').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
+      btn.style.borderColor = 'var(--accent-cyan)';
+      selectedFbTag = btn.dataset.tag;
+    });
+  });
+
+  document.getElementById('btn-open-feedback').addEventListener('click', () => {
+    sfx.playClick();
+    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
+    document.getElementById('feedback-modal').classList.remove('hidden');
+  });
+  document.getElementById('btn-close-feedback').addEventListener('click', () => {
+    document.getElementById('feedback-modal').classList.add('hidden');
+  });
+  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
+    const msg = document.getElementById('fb-msg').value.trim();
+    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
+    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
+      });
+      document.getElementById('fb-msg').value = '';
+      document.getElementById('feedback-modal').classList.add('hidden');
+      showToast('نظر شما با موفقیت ثبت شد! 🙏');
+    } catch (_e) {
+      showToast('خطا در ارسال نظر');
+    }
+  });
+
+  loadGlobalLeaderboard();
   });
 
   function updateMuteButtons() {
@@ -2483,6 +2639,41 @@ const HTML_CONTENT = `<!DOCTYPE html>
     document.getElementById('invite-banner').classList.remove('hidden');
     openLobby(clean);
   }
+
+  let selectedFbTag = '😍 عالی';
+  document.querySelectorAll('.fb-tag').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fb-tag').forEach((b) => b.style.borderColor = 'rgba(255,255,255,0.14)');
+      btn.style.borderColor = 'var(--accent-cyan)';
+      selectedFbTag = btn.dataset.tag;
+    });
+  });
+
+  document.getElementById('btn-open-feedback').addEventListener('click', () => {
+    sfx.playClick();
+    document.getElementById('fb-name').value = document.getElementById('input-nickname').value || '';
+    document.getElementById('feedback-modal').classList.remove('hidden');
+  });
+  document.getElementById('btn-close-feedback').addEventListener('click', () => {
+    document.getElementById('feedback-modal').classList.add('hidden');
+  });
+  document.getElementById('btn-send-feedback').addEventListener('click', async () => {
+    const msg = document.getElementById('fb-msg').value.trim();
+    if (!msg) { showToast('لطفاً متن نظر را بنویسید'); return; }
+    const name = (document.getElementById('fb-name').value || 'ناشناس').trim().slice(0, 20);
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tag: selectedFbTag, message: msg })
+      });
+      document.getElementById('fb-msg').value = '';
+      document.getElementById('feedback-modal').classList.add('hidden');
+      showToast('نظر شما با موفقیت ثبت شد! 🙏');
+    } catch (_e) {
+      showToast('خطا در ارسال نظر');
+    }
+  });
 
   loadGlobalLeaderboard();
 })();
@@ -2520,9 +2711,13 @@ const BOT_SKINS = [
 // In-memory isolate cache for ultra-low latency
 const rooms = new Map();
 let memoryLeaderboard = [];
+let memoryFeedback = [];
+
+const APP_VERSION = 'v1.4.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
+  bootedAt: Date.now(),
   uniquePlayers: new Set(),
   peakConcurrentToday: 0,
   totalMatchesToday: 0,
@@ -2777,13 +2972,81 @@ function getOrCreateRoom(roomCode, botsEnabled) {
       lastStep: Date.now()
     };
     rooms.set(roomCode, room);
-    if (isPublic) {
-      for (let i = 0; i < 25; i++) {
-        stepRoomBots(room, room.lastStep + 200);
-      }
-    }
   }
   return rooms.get(roomCode);
+}
+
+function getUnusedColorInRoom(room, excludeId = null) {
+  const used = new Set();
+  for (const [pid, p] of room.players) {
+    if (pid !== excludeId && p.color) used.add(p.color);
+  }
+  for (const b of room.bots) {
+    if (b.id !== excludeId && b.color) used.add(b.color);
+  }
+  for (const c of PALETTE_COLORS) {
+    if (!used.has(c)) return c;
+  }
+  return PALETTE_COLORS[Math.floor(Math.random() * PALETTE_COLORS.length)];
+}
+
+function pruneDisconnectedTerritory(room, ownerId, anchorIdx = -1) {
+  const owned = [];
+  for (const [cellIdx, oid] of room.territory) {
+    if (oid === ownerId) owned.push(cellIdx);
+  }
+  if (owned.length <= 1) return;
+
+  const ownedSet = new Set(owned);
+  const visited = new Set();
+  const components = [];
+
+  for (const start of owned) {
+    if (visited.has(start)) continue;
+    const comp = [];
+    const queue = [start];
+    visited.add(start);
+    let head = 0;
+    while (head < queue.length) {
+      const curr = queue[head++];
+      comp.push(curr);
+      const cx = curr % GRID_SIZE;
+      const cy = (curr / GRID_SIZE) | 0;
+      const neighbors = [
+        cx > 0 ? curr - 1 : -1,
+        cx < GRID_SIZE - 1 ? curr + 1 : -1,
+        cy > 0 ? curr - GRID_SIZE : -1,
+        cy < GRID_SIZE - 1 ? curr + GRID_SIZE : -1
+      ];
+      for (const n of neighbors) {
+        if (n !== -1 && ownedSet.has(n) && !visited.has(n)) {
+          visited.add(n);
+          queue.push(n);
+        }
+      }
+    }
+    components.push(comp);
+  }
+
+  if (components.length <= 1) return;
+
+  let keepComp = components[0];
+  if (anchorIdx !== -1) {
+    const anchored = components.find((c) => c.includes(anchorIdx));
+    if (anchored) keepComp = anchored;
+    else {
+      for (const c of components) if (c.length > keepComp.length) keepComp = c;
+    }
+  } else {
+    for (const c of components) if (c.length > keepComp.length) keepComp = c;
+  }
+
+  const keepSet = new Set(keepComp);
+  for (const idx of owned) {
+    if (!keepSet.has(idx)) {
+      room.territory.delete(idx);
+    }
+  }
 }
 
 function isSafeBotCell(room, bot, gx, gy) {
@@ -2861,6 +3124,7 @@ function stepRoomBots(room, now) {
   while (room.bots.length < desiredBots) {
     const safe = findSafeSpawnInRoom(room);
     const bot = createBot(room.bots.length, room.settings ? room.settings.aggression : 'mixed');
+    bot.color = getUnusedColorInRoom(room, bot.id);
     bot.x = (safe.gx + 0.5) * CELL_SIZE;
     bot.y = (safe.gy + 0.5) * CELL_SIZE;
     claimSafeBaseInRoom(room, bot.id, safe.gx, safe.gy);
@@ -2944,20 +3208,26 @@ function stepRoomBots(room, now) {
       }
     }
 
-    bot.x = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.x + bot.dx * PLAYER_SPEED * dt));
-    bot.y = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.y + bot.dy * PLAYER_SPEED * dt));
+    // Sub-stepped continuous movement so bots NEVER skip intermediate trail cells
+    const subSteps = Math.max(1, Math.ceil(dt / 0.04));
+    const subDt = dt / subSteps;
+    for (let s = 0; s < subSteps; s++) {
+      bot.x = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.x + bot.dx * PLAYER_SPEED * subDt));
+      bot.y = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.y + bot.dy * PLAYER_SPEED * subDt));
 
-    const cgx = Math.floor(bot.x / CELL_SIZE);
-    const cgy = Math.floor(bot.y / CELL_SIZE);
-    const idx = cgy * GRID_SIZE + cgx;
+      const cgx = Math.floor(bot.x / CELL_SIZE);
+      const cgy = Math.floor(bot.y / CELL_SIZE);
+      const idx = cgy * GRID_SIZE + cgx;
 
-    if (room.territory.get(idx) === bot.id) {
-      if (bot.trail.length > 0) {
-        captureBotTerritory(room, bot);
-      }
-    } else {
-      if (bot.trail[bot.trail.length - 1] !== idx) {
-        bot.trail.push(idx);
+      if (room.territory.get(idx) === bot.id) {
+        if (bot.trail.length > 0) {
+          captureBotTerritory(room, bot);
+          pruneDisconnectedTerritory(room, bot.id, idx);
+        }
+      } else {
+        if (bot.trail[bot.trail.length - 1] !== idx) {
+          bot.trail.push(idx);
+        }
       }
     }
   }
@@ -3062,11 +3332,19 @@ async function handleLobby(request) {
 
   if (body.playerId) {
     const existing = room.players.get(body.playerId);
+    let chosenColor = body.color || (existing ? existing.color : getUnusedColorInRoom(room, body.playerId));
+    // Enforce unique color in Private Room Lobby
+    for (const [pid, other] of room.players) {
+      if (pid !== body.playerId && other.color === chosenColor) {
+        chosenColor = existing ? existing.color : getUnusedColorInRoom(room, body.playerId);
+        break;
+      }
+    }
     room.players.set(body.playerId, {
       id: body.playerId,
       name: String(body.name || 'Player').slice(0, 14),
       skinId: body.skinId || 'cyber_cube',
-      color: body.color || '#00f5d4',
+      color: chosenColor,
       isBot: false,
       x: existing ? existing.x : 1000,
       y: existing ? existing.y : 1000,
@@ -3150,11 +3428,15 @@ async function handleSync(request) {
   }
 
   if (p && p.id) {
+    const existing = room.players.get(p.id);
+    const assignedColor = existing && existing.color
+      ? existing.color
+      : (body.mode === 'public' ? getUnusedColorInRoom(room, p.id) : (p.color || getUnusedColorInRoom(room, p.id)));
     room.players.set(p.id, {
       id: p.id,
       name: String(p.name || 'Player').slice(0, 14),
       skinId: p.skinId || 'cyber_cube',
-      color: p.color || '#00f5d4',
+      color: assignedColor,
       isBot: false,
       x: Number(p.x) || 1000,
       y: Number(p.y) || 1000,
@@ -3173,6 +3455,19 @@ async function handleSync(request) {
         if (typeof idx === 'number' && idx >= 0 && idx < GRID_SIZE * GRID_SIZE) {
           room.territory.set(idx, p.id);
         }
+      }
+    }
+
+    // Server invariant guard: alive player must always own at least their 5x5 base
+    if (p.alive !== false) {
+      let hasAny = false;
+      for (const oid of room.territory.values()) {
+        if (oid === p.id) { hasAny = true; break; }
+      }
+      if (!hasAny) {
+        const bx = typeof p.baseGx === 'number' ? p.baseGx : Math.floor((Number(p.x) || 1000) / CELL_SIZE);
+        const by = typeof p.baseGy === 'number' ? p.baseGy : Math.floor((Number(p.y) || 1000) / CELL_SIZE);
+        claimSafeBaseInRoom(room, p.id, bx, by);
       }
     }
 
@@ -3293,7 +3588,7 @@ async function handleLeaderboard(request, env) {
   return new Response('Method Not Allowed', { status: 405 });
 }
 
-function handleStats() {
+function handleStats(env) {
   resetTelemetryIfNewDay();
   const now = Date.now();
   let publicRoomsCount = 0;
@@ -3360,6 +3655,9 @@ function handleStats() {
   if (telemetry.history.length > 30) telemetry.history.shift();
 
   return new Response(JSON.stringify({
+    version: APP_VERSION,
+    bootedAt: telemetry.bootedAt,
+    kvConnected: !!getKV(env),
     onlinePlayersNow,
     playingPlayersNow,
     lobbyPlayersNow,
@@ -3374,7 +3672,8 @@ function handleStats() {
     totalCellsCapturedToday: telemetry.totalCellsCapturedToday,
     botArchetypes,
     history: telemetry.history,
-    rooms: anonymizedRooms
+    rooms: anonymizedRooms,
+    feedbacks: memoryFeedback.slice(0, 50)
   }), {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
   });
@@ -3491,12 +3790,13 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
 <div class="container">
   <div class="topbar">
     <div class="title-wrap">
-      <h1>EdgeWars.io — داشبورد مانیتورینگ و آمار زنده</h1>
-      <p>گزارش لحظه‌ای اتاق‌ها، بازیکنان و نبردها (بدون نمایش کد اتاق‌های خصوصی و اطلاعات حساس)</p>
+      <h1>EdgeWars.io — داشبورد مانیتورینگ و آمار زنده <span id="dash-version" style="font-size:0.85rem;color:var(--cyan);">v1.4.0</span></h1>
+      <p id="dash-storage-status">در حال بررسی وضعیت ذخیره‌سازی...</p>
     </div>
     <div class="actions">
       <span class="live-pill"><span class="dot"></span> LIVE 2s</span>
       <button class="btn" id="btn-refresh">🔄 بروزرسانی</button>
+      <a class="btn" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener">⭐ GitHub</a>
       <a class="btn" href="/">🎮 ورود به بازی</a>
     </div>
   </div>
@@ -3563,6 +3863,16 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
       </table>
     </div>
   </div>
+
+  <div class="box" style="margin-top:16px;">
+    <div class="box-title">
+      <span>💬 نظرات و بازخوردهای بازیکنان (Player Feedback)</span>
+      <span style="font-size:0.75rem;color:var(--muted);" id="fb-count">0 نظر</span>
+    </div>
+    <div id="fb-list" style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;">
+      <div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3623,6 +3933,12 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
       if (!res.ok) return;
       const d = await res.json();
 
+      if (d.version) document.getElementById('dash-version').textContent = d.version;
+      const sinceStr = d.bootedAt ? new Date(d.bootedAt).toLocaleString('fa-IR') : '--';
+      document.getElementById('dash-storage-status').textContent = d.kvConnected
+        ? \`🟢 متصل به Edge KV (پایدار) • آمار از: \${sinceStr}\`
+        : \`🟡 حافظه موقت نود لبه (In-Memory — با انتشار نسخه جدید ریست می‌شود) • آمار از: \${sinceStr}\`;
+
       document.getElementById('kpi-online').textContent = d.onlinePlayersNow;
       document.getElementById('kpi-online-sub').textContent =
         \`در بازی: \${d.playingPlayersNow} • در لابی: \${d.lobbyPlayersNow} • اوج امروز: \${d.peakConcurrentToday}\`;
@@ -3671,6 +3987,20 @@ const DASHBOARD_HTML_CONTENT = `<!DOCTYPE html>
           </tr>
         \`).join('');
       }
+      const fbList = document.getElementById('fb-list');
+      const fbs = d.feedbacks || [];
+      document.getElementById('fb-count').textContent = \`\${fbs.length} نظر\`;
+      fbList.innerHTML = fbs.length === 0
+        ? '<div style="color:var(--muted);font-size:0.82rem;">هنوز نظری ثبت نشده است.</div>'
+        : fbs.map((f) => \`
+          <div style="background:rgba(7,11,20,0.6);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;font-size:0.82rem;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>\${f.name} <span class="badge badge-play">\${f.tag}</span></strong>
+              <span style="color:var(--muted);font-size:0.72rem;">\${new Date(f.t).toLocaleTimeString('fa-IR')}</span>
+            </div>
+            <div style="color:#e2e8f0;line-height:1.45;">\${f.message}</div>
+          </div>
+        \`).join('');
     } catch (_e) {}
   }
 
@@ -3693,7 +4023,22 @@ async function handleRequest(request, env) {
     return handleLobby(request);
   }
   if (url.pathname === '/api/stats' && request.method === 'GET') {
-    return handleStats();
+    return handleStats(env);
+  }
+  if (url.pathname === '/api/feedback' && request.method === 'POST') {
+    try {
+      const fb = await request.json();
+      memoryFeedback.unshift({
+        name: String(fb.name || 'ناشناس').slice(0, 20),
+        tag: String(fb.tag || '💬').slice(0, 16),
+        message: String(fb.message || '').slice(0, 300),
+        t: Date.now()
+      });
+      if (memoryFeedback.length > 200) memoryFeedback.length = 200;
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (_e) {
+      return new Response(JSON.stringify({ error: 'Bad request' }), { status: 400 });
+    }
   }
   if (url.pathname === '/dashboard') {
     return new Response(DASHBOARD_HTML_CONTENT, {
