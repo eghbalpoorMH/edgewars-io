@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.7.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.8.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1477,6 +1477,17 @@ const HTML_CONTENT = `<!DOCTYPE html>
         const oIdx = inBounds(ogx, ogy) ? cellIdx(ogx, ogy) : -1;
         pruneLocalDisconnectedTerritory(other.id, oIdx);
       }
+
+      // Eliminate any entity whose entire territory was swallowed (0 cells left)
+      const ownerCounts = new Map();
+      for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+        if (territory[i]) ownerCounts.set(territory[i], (ownerCounts.get(territory[i]) || 0) + 1);
+      }
+      for (const other of state.entities.values()) {
+        if (other.alive && other.id !== ent.id && (ownerCounts.get(other.id) || 0) === 0) {
+          eliminateEntity(other, ent, \`Entire territory conquered by \${ent.name}!\`);
+        }
+      }
     }
     return newlyClaimed.length;
   }
@@ -1953,7 +1964,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
             }
           }
         }
-        pruneLocalDisconnectedTerritory(state.playerId);
+        for (const other of state.entities.values()) {
+          if (other.alive) pruneLocalDisconnectedTerritory(other.id);
+        }
       }
       // Client invariant guard: alive player must always own at least their 5x5 base
       if (state.me && state.me.alive) {
@@ -2709,7 +2722,7 @@ const BOT_SKINS = [
 const rooms = new Map();
 let memoryLeaderboard = [];
 
-const APP_VERSION = 'v1.7.0';
+const APP_VERSION = 'v1.8.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3196,6 +3209,21 @@ function stepRoomBots(room, now) {
         const legTime = bot.archetype === 'DAREDEVIL' ? 1.15 : (bot.archetype === 'TURTLE' ? 0.35 : 0.65);
         bot.turnTimer = legTime + Math.random() * 0.45;
       }
+
+      // Guaranteed wall-escape fallback: never stay pointed into a wall or unsafe cell
+      if (!isSafeBotCell(room, bot, gx + bot.dx, gy + bot.dy)) {
+        bot.planDirs = [];
+        const fallbackDirs = [
+          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
+        ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy) && isSafeBotCell(room, bot, gx + d.dx, gy + d.dy));
+        if (fallbackDirs.length > 0) {
+          const pick = fallbackDirs[Math.floor(Math.random() * fallbackDirs.length)];
+          bot.dx = pick.dx;
+          bot.dy = pick.dy;
+          bot.turnTimer = 0.4;
+        }
+      }
     }
 
     // Sub-stepped continuous movement so bots NEVER skip intermediate trail cells
@@ -3279,6 +3307,24 @@ function stepRoomBots(room, now) {
   for (const [k, ownerId] of room.territory) {
     if (!aliveIds.has(ownerId)) {
       room.territory.delete(k);
+    }
+  }
+
+  // Enforce single connected territory component for ALL alive entities on server
+  for (const oid of aliveIds) {
+    pruneDisconnectedTerritory(room, oid);
+  }
+
+  // Eliminate/respawn any bot whose entire territory was swallowed (0 cells left)
+  const ownerCounts = new Map();
+  for (const oid of room.territory.values()) {
+    ownerCounts.set(oid, (ownerCounts.get(oid) || 0) + 1);
+  }
+  for (let i = 0; i < room.bots.length; i++) {
+    const b = room.bots[i];
+    if (b.alive && (ownerCounts.get(b.id) || 0) === 0) {
+      b.trail = [];
+      respawnBot(room, b, i);
     }
   }
 }

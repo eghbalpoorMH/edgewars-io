@@ -707,7 +707,7 @@
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.7.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.8.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1471,6 +1471,17 @@
         const oIdx = inBounds(ogx, ogy) ? cellIdx(ogx, ogy) : -1;
         pruneLocalDisconnectedTerritory(other.id, oIdx);
       }
+
+      // Eliminate any entity whose entire territory was swallowed (0 cells left)
+      const ownerCounts = new Map();
+      for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+        if (territory[i]) ownerCounts.set(territory[i], (ownerCounts.get(territory[i]) || 0) + 1);
+      }
+      for (const other of state.entities.values()) {
+        if (other.alive && other.id !== ent.id && (ownerCounts.get(other.id) || 0) === 0) {
+          eliminateEntity(other, ent, `Entire territory conquered by ${ent.name}!`);
+        }
+      }
     }
     return newlyClaimed.length;
   }
@@ -1947,7 +1958,9 @@
             }
           }
         }
-        pruneLocalDisconnectedTerritory(state.playerId);
+        for (const other of state.entities.values()) {
+          if (other.alive) pruneLocalDisconnectedTerritory(other.id);
+        }
       }
       // Client invariant guard: alive player must always own at least their 5x5 base
       if (state.me && state.me.alive) {
