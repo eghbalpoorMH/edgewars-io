@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.5.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.6.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1583,6 +1583,18 @@ const HTML_CONTENT = `<!DOCTYPE html>
     if (victim.id === state.playerId) {
       sfx.playDeath();
       state.pendingClearedVictims.push(victim.id);
+      if (!state.offlineMode) {
+        fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomCode: state.roomCode,
+            mode: state.mode,
+            player: { id: state.playerId, name: victim.name, alive: false, trail: [] },
+            clearedVictims: [victim.id]
+          })
+        }).catch(() => {});
+      }
       showGameOver(reason);
     } else {
       victim.killCooldown = performance.now() + 2000;
@@ -1623,39 +1635,62 @@ const HTML_CONTENT = `<!DOCTYPE html>
     }
   });
 
-  // Virtual Joystick
+  // Full-Screen Dynamic Floating Joystick + Continuous Follow-Thumb Swipe
   const joyZone = document.getElementById('joystick-zone');
   const joyKnob = document.getElementById('joystick-knob');
-  let joyActive = false;
+  let touchAnchorX = 0;
+  let touchAnchorY = 0;
+  let touchActive = false;
 
-  function handleJoystick(clientX, clientY) {
-    const rect = joyZone.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const dx = clientX - cx;
-    const dy = clientY - cy;
+  function onTouchStart(e) {
+    if (!state.running || !e.touches.length) return;
+    const t = e.touches[0];
+    touchActive = true;
+    touchAnchorX = t.clientX;
+    touchAnchorY = t.clientY;
+    joyZone.style.display = 'flex';
+    joyZone.style.left = (touchAnchorX - 60) + 'px';
+    joyZone.style.top = (touchAnchorY - 60) + 'px';
+    joyZone.style.bottom = 'auto';
+    joyKnob.style.transform = 'translate(0px, 0px)';
+  }
+
+  function onTouchMove(e) {
+    if (!touchActive || !state.running || !e.touches.length) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchAnchorX;
+    const dy = t.clientY - touchAnchorY;
     const dist = Math.hypot(dx, dy);
     const maxR = 36;
     const clamped = Math.min(dist, maxR);
     const angle = Math.atan2(dy, dx);
     joyKnob.style.transform = \`translate(\${Math.cos(angle) * clamped}px, \${Math.sin(angle) * clamped}px)\`;
-    if (dist > 10) {
+
+    if (dist > 12) {
       if (Math.abs(dx) > Math.abs(dy)) setDirection(dx > 0 ? 1 : -1, 0);
       else setDirection(0, dy > 0 ? 1 : -1);
+
+      // Slide anchor along with thumb for effortless rapid turns
+      if (dist > 28) {
+        touchAnchorX = t.clientX - Math.cos(angle) * 20;
+        touchAnchorY = t.clientY - Math.sin(angle) * 20;
+        joyZone.style.left = (touchAnchorX - 60) + 'px';
+        joyZone.style.top = (touchAnchorY - 60) + 'px';
+      }
     }
   }
 
-  joyZone.addEventListener('touchstart', (e) => {
-    joyActive = true;
-    handleJoystick(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  joyZone.addEventListener('touchmove', (e) => {
-    if (joyActive) handleJoystick(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  joyZone.addEventListener('touchend', () => {
-    joyActive = false;
+  function onTouchEnd() {
+    touchActive = false;
     joyKnob.style.transform = 'translate(0px, 0px)';
-  });
+  }
+
+  canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+  canvas.addEventListener('touchmove', onTouchMove, { passive: true });
+  canvas.addEventListener('touchend', onTouchEnd);
+  joyZone.addEventListener('touchstart', onTouchStart, { passive: true });
+  joyZone.addEventListener('touchmove', onTouchMove, { passive: true });
+  joyZone.addEventListener('touchend', onTouchEnd);
 
   // =========================================================================
   // 6. SIMULATION STEP & EDGE SYNC
@@ -2203,6 +2238,14 @@ const HTML_CONTENT = `<!DOCTYPE html>
           ent.targetY += ent.dy * PLAYER_SPEED * dt;
           ent.x += (ent.targetX - ent.x) * Math.min(1, dt * 12);
           ent.y += (ent.targetY - ent.y) * Math.min(1, dt * 12);
+
+          if (state.me && state.me.alive) {
+            const egx = Math.floor(ent.x / CELL_SIZE);
+            const egy = Math.floor(ent.y / CELL_SIZE);
+            if (inBounds(egx, egy) && trailGrid[cellIdx(egx, egy)] === state.playerId) {
+              eliminateEntity(state.me, ent, \`Trail severed by \${ent.name}!\`);
+            }
+          }
         }
       }
 
@@ -2756,7 +2799,7 @@ const rooms = new Map();
 let memoryLeaderboard = [];
 let memoryFeedback = [];
 
-const APP_VERSION = 'v1.5.0';
+const APP_VERSION = 'v1.6.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3262,6 +3305,18 @@ function stepRoomBots(room, now) {
       const cgy = Math.floor(bot.y / CELL_SIZE);
       const idx = cgy * GRID_SIZE + cgx;
 
+      // Check if bot crossed any player's trail on this sub-step
+      for (const p of room.players.values()) {
+        if (p.alive && p.trail.includes(idx)) {
+          p.alive = false;
+          p.killedBy = bot.name;
+          p.trail = [];
+          for (const [k, v] of room.territory) {
+            if (v === p.id) room.territory.delete(k);
+          }
+        }
+      }
+
       if (room.territory.get(idx) === bot.id) {
         if (bot.trail.length > 0) {
           captureBotTerritory(room, bot);
@@ -3479,6 +3534,10 @@ async function handleSync(request) {
     resetTelemetryIfNewDay();
     telemetry.uniquePlayers.add(p.id);
     telemetry.totalMatchesToday++;
+    // Wipe any old territory from previous match before spawning
+    for (const [k, v] of room.territory) {
+      if (v === p.id) room.territory.delete(k);
+    }
     const safe = findSafeSpawnInRoom(room);
     claimSafeBaseInRoom(room, p.id, safe.gx, safe.gy);
     assignedSpawn = { x: (safe.gx + 0.5) * CELL_SIZE, y: (safe.gy + 0.5) * CELL_SIZE, gx: safe.gx, gy: safe.gy };
@@ -3496,26 +3555,32 @@ async function handleSync(request) {
 
   if (p && p.id) {
     const existing = room.players.get(p.id);
-    const assignedColor = existing && existing.color
-      ? existing.color
-      : (body.mode === 'public' ? getUnusedColorInRoom(room, p.id) : (p.color || getUnusedColorInRoom(room, p.id)));
-    const uniqueName = existing && existing.name ? existing.name : ensureUniqueNameInRoom(room, p.id, p.name);
-    room.players.set(p.id, {
-      id: p.id,
-      name: uniqueName,
-      skinId: p.skinId || 'cyber_cube',
-      color: assignedColor,
-      isBot: false,
-      x: Number(p.x) || 1000,
-      y: Number(p.y) || 1000,
-      dx: Number(p.dx) || 1,
-      dy: Number(p.dy) || 0,
-      score: Number(p.score) || 0,
-      kills: Number(p.kills) || 0,
-      alive: p.alive !== false,
-      trail: Array.isArray(p.trail) ? p.trail.slice(-80) : [],
-      lastSeen: now
-    });
+    // Do NOT resurrect a player who was killed by another player/bot unless spawnRequest is true
+    if (existing && existing.alive === false && !body.spawnRequest) {
+      existing.lastSeen = now;
+    } else {
+      const assignedColor = existing && existing.color
+        ? existing.color
+        : (body.mode === 'public' ? getUnusedColorInRoom(room, p.id) : (p.color || getUnusedColorInRoom(room, p.id)));
+      const uniqueName = existing && existing.name ? existing.name : ensureUniqueNameInRoom(room, p.id, p.name);
+      room.players.set(p.id, {
+        id: p.id,
+        name: uniqueName,
+        skinId: p.skinId || 'cyber_cube',
+        color: assignedColor,
+        isBot: false,
+        x: Number(p.x) || 1000,
+        y: Number(p.y) || 1000,
+        dx: Number(p.dx) || 1,
+        dy: Number(p.dy) || 0,
+        score: Number(p.score) || 0,
+        kills: Number(p.kills) || 0,
+        alive: p.alive !== false,
+        killedBy: null,
+        trail: Array.isArray(p.trail) ? p.trail.slice(-80) : [],
+        lastSeen: now
+      });
+    }
 
     if (!body.spawnRequest && Array.isArray(body.newCells)) {
       telemetry.totalCellsCapturedToday += body.newCells.length;
