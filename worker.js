@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.9.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v2.0.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1581,9 +1581,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
     } else {
       victim.killCooldown = performance.now() + 2000;
       state.pendingClearedVictims.push(victim.id);
-      if (state.offlineMode && victim.isBot) {
+      if (victim.isBot) {
         setTimeout(() => {
-          if (!state.running || !state.offlineMode) return;
+          if (!state.running) return;
           const respawned = createEntity(victim.id, victim.name, victim.skin, true);
           state.entities.set(victim.id, respawned);
         }, 2500);
@@ -1698,38 +1698,78 @@ const HTML_CONTENT = `<!DOCTYPE html>
     }
   }
 
+  function getSafeBotDirections(bot, gx, gy) {
+    const dirs = [
+      { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+      { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
+    ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy));
+    return dirs.filter((d) => {
+      const nx = gx + d.dx;
+      const ny = gy + d.dy;
+      if (nx < 2 || nx > GRID_SIZE - 3 || ny < 2 || ny > GRID_SIZE - 3) return false;
+      if (trailGrid[cellIdx(nx, ny)] === bot.id) return false;
+      return true;
+    });
+  }
+
   function stepLocalBot(bot, dt) {
     if (!bot.alive) return;
-    bot.botTimer -= dt;
     const gx = Math.floor(bot.x / CELL_SIZE);
     const gy = Math.floor(bot.y / CELL_SIZE);
+    const currIdx = inBounds(gx, gy) ? cellIdx(gx, gy) : -1;
 
-    if (bot.botTimer <= 0 || gx < 4 || gx > GRID_SIZE - 5 || gy < 4 || gy > GRID_SIZE - 5) {
-      if (gx < 5) { bot.nextDx = 1; bot.nextDy = 0; bot.botTimer = 0.5; return; }
-      if (gx > GRID_SIZE - 6) { bot.nextDx = -1; bot.nextDy = 0; bot.botTimer = 0.5; return; }
-      if (gy < 5) { bot.nextDx = 0; bot.nextDy = 1; bot.botTimer = 0.5; return; }
-      if (gy > GRID_SIZE - 6) { bot.nextDx = 0; bot.nextDy = -1; bot.botTimer = 0.5; return; }
+    // Watchdog: if stuck in same cell > 0.4s, force a safe turn
+    if (bot.lastDecisionCell === currIdx) {
+      bot.sameCellTime = (bot.sameCellTime || 0) + dt;
+      if (bot.sameCellTime < 0.4) return;
+    } else {
+      bot.lastDecisionCell = currIdx;
+      bot.sameCellTime = 0;
+    }
 
-      if (!bot.planDirs || bot.planDirs.length === 0) {
-        const dirs = [
-          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
-          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
-        ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy));
-        const d1 = dirs[Math.floor(Math.random() * dirs.length)];
-        const perp = d1.dx !== 0
-          ? [{ dx: 0, dy: 1 }, { dx: 0, dy: -1 }]
-          : [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }];
-        const d2 = perp[Math.floor(Math.random() * 2)];
-        const d3 = { dx: -d1.dx, dy: -d1.dy };
-        const d4 = { dx: -d2.dx, dy: -d2.dy };
-        bot.planDirs = [d1, d2, d3, d4];
+    const safeDirs = getSafeBotDirections(bot, gx, gy);
+    if (safeDirs.length === 0) return;
+
+    const currentIsSafe = safeDirs.some((d) => d.dx === bot.dx && d.dy === bot.dy);
+    const onOwn = currIdx !== -1 && territory[currIdx] === bot.id;
+
+    // If heading toward wall or own trail, turn immediately!
+    if (!currentIsSafe) {
+      const pick = safeDirs[Math.floor(Math.random() * safeDirs.length)];
+      bot.nextDx = pick.dx;
+      bot.nextDy = pick.dy;
+      return;
+    }
+
+    // If outside territory with long trail, steer straight toward nearest owned cell
+    if (!onOwn && bot.trail.length >= (bot.archetype === 'DAREDEVIL' ? 18 : 9)) {
+      let bestDir = safeDirs[0];
+      let bestDist = 1e9;
+      // Sample owned cells
+      let bestTx = gx, bestTy = gy;
+      for (let i = 0; i < GRID_SIZE * GRID_SIZE; i += 3) {
+        if (territory[i] === bot.id) {
+          const tx = i % GRID_SIZE;
+          const ty = (i / GRID_SIZE) | 0;
+          const d = Math.abs(tx - gx) + Math.abs(ty - gy);
+          if (d < bestDist) { bestDist = d; bestTx = tx; bestTy = ty; }
+        }
       }
-      const next = bot.planDirs.shift();
-      if (!(next.dx === -bot.dx && next.dy === -bot.dy)) {
-        bot.nextDx = next.dx;
-        bot.nextDy = next.dy;
+      bestDist = 1e9;
+      for (const d of safeDirs) {
+        const dist = Math.abs((gx + d.dx) - bestTx) + Math.abs((gy + d.dy) - bestTy);
+        if (dist < bestDist) { bestDist = dist; bestDir = d; }
       }
-      bot.botTimer = 0.45 + Math.random() * 0.55;
+      bot.nextDx = bestDir.dx;
+      bot.nextDy = bestDir.dy;
+      return;
+    }
+
+    // Occasional random 90-degree turn to form rectangular capture loops
+    if (Math.random() < (onOwn ? 0.14 : 0.22)) {
+      const pick = safeDirs[Math.floor(Math.random() * safeDirs.length)];
+      bot.nextDx = pick.dx;
+      bot.nextDy = pick.dy;
     }
   }
 
@@ -1890,6 +1930,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
       const activeIds = new Set([state.playerId]);
       const nowMs = performance.now();
       for (const rp of data.players || []) {
+        if (rp.isBot) continue; // Bots are simulated locally at 60 FPS for zero-lag, zero-desync physics
         if (rp.id === state.playerId) {
           if (rp.color && state.me) {
             state.selectedColor = rp.color;
@@ -1942,25 +1983,26 @@ const HTML_CONTENT = `<!DOCTYPE html>
         }
       }
 
-      for (const [id] of state.entities) {
-        if (!activeIds.has(id)) {
+      for (const [id, ent] of state.entities) {
+        if (!ent.isBot && !activeIds.has(id)) {
           state.entities.delete(id);
         }
       }
 
       rebuildTrailGrid();
 
-      // Apply full authoritative territory snapshot from server (never wipe local player's cells to null across Edge isolates)
+      // Apply full authoritative territory snapshot from server (never wipe local player's or local bots' cells to null across Edge isolates)
       if (Array.isArray(data.territoryOwners)) {
         for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-          if (territory[i] !== state.playerId) territory[i] = null;
+          const cur = territory[i];
+          const curEnt = cur ? state.entities.get(cur) : null;
+          if (cur !== state.playerId && !(curEnt && curEnt.isBot)) territory[i] = null;
         }
         for (const [cellIndex, ownerId] of data.territoryOwners) {
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
-            if (ownerId && ownerId !== state.playerId) {
+            const ownerEnt = state.entities.get(ownerId);
+            if (ownerId && ownerId !== state.playerId && !(ownerEnt && ownerEnt.isBot)) {
               territory[cellIndex] = ownerId;
-            } else if (ownerId === state.playerId) {
-              territory[cellIndex] = state.playerId;
             }
           }
         }
@@ -2223,7 +2265,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
       for (const ent of state.entities.values()) {
         if (ent.id === state.playerId || !ent.alive) continue;
-        if (state.offlineMode && ent.isBot) {
+        if (ent.isBot) {
           stepLocalBot(ent, dt);
           stepEntityPhysics(ent, dt);
         } else {
@@ -2415,6 +2457,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     document.getElementById('hud').classList.remove('hidden');
 
     state.running = true;
+    spawnOfflineBots();
     syncWithEdge();
   }
 
@@ -2727,7 +2770,7 @@ const BOT_SKINS = [
 const rooms = new Map();
 let memoryLeaderboard = [];
 
-const APP_VERSION = 'v1.9.0';
+const APP_VERSION = 'v2.0.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3406,6 +3449,32 @@ async function handleLobby(request) {
 
   if (body.isCreator && body.playerId) {
     room.hostId = body.playerId;
+  }
+
+  // Merge gossiped peer snapshots from other Edge isolates
+  if (Array.isArray(body.knownPlayers)) {
+    for (const kp of body.knownPlayers) {
+      if (!kp || !kp.id || kp.id === body.playerId) continue;
+      if (kp.isHost) room.hostId = kp.id;
+      if (!room.players.has(kp.id)) {
+        room.players.set(kp.id, {
+          id: kp.id,
+          name: String(kp.name || 'Player').slice(0, 14),
+          skinId: kp.skinId || 'cyber_cube',
+          color: kp.color || '#00f5d4',
+          isBot: false,
+          x: 1000,
+          y: 1000,
+          dx: 1,
+          dy: 0,
+          score: 250,
+          kills: 0,
+          alive: true,
+          trail: [],
+          lastSeen: now - 1000
+        });
+      }
+    }
   }
 
   if (body.playerId) {
