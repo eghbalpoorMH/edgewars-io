@@ -1,5 +1,7 @@
 # EdgeWars.io — 2.5D Serverless Territory Warfare
 
+> **🎮 Play Live on ArvanCloud Edge:** https://edgewars.mheghbalpoor-0lkub.arvanedge.ir/
+
 **EdgeWars.io** is a real-time multiplayer territory-capture `.io` browser game inspired by *Paper.io 2*, featuring **2.5D extruded pseudo-3D visuals**, procedural **Web Audio API** sound effects, **smart Edge AI bots**, **private friend rooms (`?room=CODE`)**, and a **Global Daily Top 5 Leaderboard**.
 
 The entire application—frontend UI, 2.5D game engine, multiplayer room sync (`/api/sync`), and leaderboard (`/api/leaderboard`)—runs **100% serverless inside a single ArvanCloud Edge Worker (`worker.js`)** with zero external VPS/Cloud servers, zero third-party CDN assets, and zero WebSocket servers.
