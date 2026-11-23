@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.4.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.5.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1272,15 +1272,30 @@ const HTML_CONTENT = `<!DOCTYPE html>
   const particles = [];
   const popups = [];
 
+  function generateRandomNick() {
+    const p = ['Cyber', 'Neon', 'Quantum', 'Apex', 'Shadow', 'Solar', 'Turbo', 'Nova', 'Storm', 'Hyper', 'Astra', 'Vortex'];
+    const s = ['Wolf', 'Falcon', 'Knight', 'Rider', 'Ghost', 'Titan', 'Viper', 'Blade', 'Spark', 'Hawk', 'Hunter', 'Fox'];
+    return p[Math.floor(Math.random() * p.length)] + s[Math.floor(Math.random() * s.length)] + Math.floor(Math.random() * 90 + 10);
+  }
+
+  const cachedNick = localStorage.getItem('edgewars_nickname') || generateRandomNick();
+  localStorage.setItem('edgewars_nickname', cachedNick);
+  document.getElementById('input-nickname').value = cachedNick;
+
+  const cachedSkinId = localStorage.getItem('edgewars_skin_id') || SKINS[0].id;
+  const cachedColor = localStorage.getItem('edgewars_color') || PALETTE_COLORS[0];
+  const initialSkin = SKINS.find((s) => s.id === cachedSkinId) || SKINS[0];
+
   let state = {
     running: false,
     mode: 'public', // 'public' | 'private'
     roomCode: 'PUBLIC',
+    isLobbyHost: false,
     botsEnabled: true,
     offlineMode: false,
     playerId: 'p_' + Math.random().toString(36).slice(2, 9),
-    selectedSkin: { ...SKINS[0] },
-    selectedColor: PALETTE_COLORS[0],
+    selectedSkin: { ...initialSkin, color: cachedColor },
+    selectedColor: cachedColor,
     me: null,
     entities: new Map(), // id -> entity
     camera: { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 },
@@ -2233,9 +2248,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
   const skinGrid = document.getElementById('skin-grid');
   const skinCanvases = [];
 
-  SKINS.forEach((skin, idx) => {
+  SKINS.forEach((skin) => {
     const card = document.createElement('div');
-    card.className = 'skin-card' + (idx === 0 ? ' active' : '');
+    card.className = 'skin-card' + (skin.id === state.selectedSkin.id ? ' active' : '');
     const c = document.createElement('canvas');
     c.width = 64;
     c.height = 64;
@@ -2247,11 +2262,17 @@ const HTML_CONTENT = `<!DOCTYPE html>
       sfx.playClick();
       document.querySelectorAll('.skin-card').forEach((el) => el.classList.remove('active'));
       card.classList.add('active');
-      state.selectedSkin = skin;
+      state.selectedSkin = { ...skin, color: state.selectedColor };
+      localStorage.setItem('edgewars_skin_id', skin.id);
       document.getElementById('selected-skin-name').textContent = skin.name;
     });
     skinGrid.appendChild(card);
     skinCanvases.push({ ctx: c.getContext('2d'), skin });
+  });
+  document.getElementById('selected-skin-name').textContent = state.selectedSkin.name;
+  document.getElementById('input-nickname').addEventListener('input', (e) => {
+    const v = e.target.value.trim();
+    if (v) localStorage.setItem('edgewars_nickname', v);
   });
 
   function animateSkinPreviews(t) {
@@ -2391,8 +2412,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
       sw.style.background = col;
       sw.title = col;
       sw.addEventListener('click', () => {
+        if (sw.classList.contains('taken')) {
+          showToast('این رنگ توسط بازیکن دیگری انتخاب شده است! 🔒');
+          return;
+        }
         sfx.playClick();
         state.selectedColor = col;
+        localStorage.setItem('edgewars_color', col);
         state.selectedSkin = { ...state.selectedSkin, color: col };
         document.querySelectorAll('.color-swatch').forEach((s) => s.classList.toggle('active', s.title === col));
         if (onPick) onPick(col);
@@ -2412,6 +2438,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     card.addEventListener('click', () => {
       sfx.playClick();
       state.selectedSkin = { ...skin, color: state.selectedColor };
+      localStorage.setItem('edgewars_skin_id', skin.id);
       document.querySelectorAll('#lobby-skin-grid .skin-card').forEach((el) => el.classList.remove('active'));
       card.classList.add('active');
       pollLobby();
@@ -2421,6 +2448,8 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
   document.getElementById('lobby-nickname').addEventListener('input', (e) => {
     document.getElementById('input-nickname').value = e.target.value;
+    const v = e.target.value.trim();
+    if (v) localStorage.setItem('edgewars_nickname', v);
   });
 
   const WIN_DESC = {
@@ -2463,6 +2492,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
         body: JSON.stringify({
           roomCode: state.roomCode,
           playerId: state.playerId,
+          isCreator: state.isLobbyHost,
           name: nick,
           skinId: state.selectedSkin.id,
           color: state.selectedColor,
@@ -2472,11 +2502,18 @@ const HTML_CONTENT = `<!DOCTYPE html>
       });
       if (!res.ok) return;
       const data = await res.json();
-      const isHost = data.hostId === state.playerId;
+      const isHost = state.isLobbyHost && data.hostId === state.playerId;
       document.getElementById('lobby-role-badge').textContent = isHost ? 'HOST' : 'GUEST';
       document.getElementById('btn-lobby-start').style.display = isHost ? 'inline-flex' : 'none';
       document.getElementById('sel-bot-count').disabled = !isHost;
       document.getElementById('sel-win-mode').disabled = !isHost;
+
+      const meInLobby = (data.players || []).find((p) => p.id === state.playerId);
+      if (meInLobby && meInLobby.color && meInLobby.color !== state.selectedColor) {
+        state.selectedColor = meInLobby.color;
+        state.selectedSkin = { ...state.selectedSkin, color: meInLobby.color };
+        document.querySelectorAll('#lobby-color-palette .color-swatch').forEach((s) => s.classList.toggle('active', s.title === meInLobby.color));
+      }
 
       if (!isHost && data.settings) {
         document.getElementById('sel-bot-count').value = String(data.settings.botCount ?? 6);
@@ -2513,8 +2550,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
     } catch (_e) {}
   }
 
-  function openLobby(code) {
+  function openLobby(code, isCreator = false) {
     state.roomCode = code;
+    state.isLobbyHost = isCreator;
+    document.getElementById('lobby-role-badge').textContent = isCreator ? 'HOST' : 'GUEST';
+    document.getElementById('btn-lobby-start').style.display = isCreator ? 'inline-flex' : 'none';
+    document.getElementById('sel-bot-count').disabled = !isCreator;
+    document.getElementById('sel-win-mode').disabled = !isCreator;
     document.getElementById('lobby-nickname').value = document.getElementById('input-nickname').value || 'CyberPilot';
     document.getElementById('lobby-code-title').textContent = code;
     document.getElementById('start-screen').classList.add('hidden');
@@ -2532,7 +2574,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     window.history.replaceState({}, '', url.toString());
     document.getElementById('banner-room-code').textContent = code;
     document.getElementById('invite-banner').classList.remove('hidden');
-    openLobby(code);
+    openLobby(code, true);
   });
 
   document.getElementById('btn-join-room').addEventListener('click', () => {
@@ -2541,7 +2583,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
       showToast('Enter a valid room code!');
       return;
     }
-    openLobby(code);
+    openLobby(code, false);
   });
 
   document.getElementById('btn-lobby-start').addEventListener('click', () => pollLobby('start'));
@@ -2689,6 +2731,7 @@ const PLAYER_SPEED = 195;
 const MAX_ROOM_ENTITIES = 12;
 const MAX_PRIVATE_ROOM_ENTITIES = 20;
 const PLAYER_TIMEOUT_MS = 5000;
+const LOBBY_PLAYER_TIMEOUT_MS = 45000;
 
 const PALETTE_COLORS = [
   '#00f5d4', '#ffbe0b', '#ff007f', '#9b5de5', '#00bbf9',
@@ -2713,7 +2756,7 @@ const rooms = new Map();
 let memoryLeaderboard = [];
 let memoryFeedback = [];
 
-const APP_VERSION = 'v1.4.0';
+const APP_VERSION = 'v1.5.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3317,6 +3360,25 @@ function checkRoomVictory(room, now) {
   }
 }
 
+function ensureUniqueNameInRoom(room, playerId, rawName) {
+  const base = String(rawName || 'Player').trim().slice(0, 14) || 'Player';
+  const taken = new Set();
+  for (const [pid, p] of room.players) {
+    if (pid !== playerId && p.name) taken.add(p.name.toLowerCase());
+  }
+  for (const b of room.bots) {
+    if (b.id !== playerId && b.name) taken.add(b.name.toLowerCase());
+  }
+  if (!taken.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (n < 99) {
+    const candidate = `${base.slice(0, 11)}_${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+    n++;
+  }
+  return `${base.slice(0, 10)}_${Math.floor(Math.random() * 90 + 10)}`;
+}
+
 async function handleLobby(request) {
   let body;
   try {
@@ -3328,7 +3390,13 @@ async function handleLobby(request) {
   const roomCode = (body.roomCode || 'PUBLIC').toUpperCase().slice(0, 8);
   const room = getOrCreateRoom(roomCode, true);
 
-  if (!room.hostId && body.playerId) room.hostId = body.playerId;
+  for (const [pid, p] of room.players) {
+    if (now - p.lastSeen > LOBBY_PLAYER_TIMEOUT_MS) room.players.delete(pid);
+  }
+
+  if (body.isCreator && body.playerId) {
+    room.hostId = body.playerId;
+  }
 
   if (body.playerId) {
     const existing = room.players.get(body.playerId);
@@ -3336,13 +3404,16 @@ async function handleLobby(request) {
     // Enforce unique color in Private Room Lobby
     for (const [pid, other] of room.players) {
       if (pid !== body.playerId && other.color === chosenColor) {
-        chosenColor = existing ? existing.color : getUnusedColorInRoom(room, body.playerId);
+        chosenColor = existing && existing.color !== other.color
+          ? existing.color
+          : getUnusedColorInRoom(room, body.playerId);
         break;
       }
     }
+    const uniqueName = ensureUniqueNameInRoom(room, body.playerId, body.name);
     room.players.set(body.playerId, {
       id: body.playerId,
-      name: String(body.name || 'Player').slice(0, 14),
+      name: uniqueName,
       skinId: body.skinId || 'cyber_cube',
       color: chosenColor,
       isBot: false,
@@ -3374,10 +3445,6 @@ async function handleLobby(request) {
     room.winner = null;
     room.territory.clear();
     room.bots = [];
-  }
-
-  for (const [pid, p] of room.players) {
-    if (now - p.lastSeen > PLAYER_TIMEOUT_MS) room.players.delete(pid);
   }
 
   return new Response(JSON.stringify({
@@ -3432,9 +3499,10 @@ async function handleSync(request) {
     const assignedColor = existing && existing.color
       ? existing.color
       : (body.mode === 'public' ? getUnusedColorInRoom(room, p.id) : (p.color || getUnusedColorInRoom(room, p.id)));
+    const uniqueName = existing && existing.name ? existing.name : ensureUniqueNameInRoom(room, p.id, p.name);
     room.players.set(p.id, {
       id: p.id,
-      name: String(p.name || 'Player').slice(0, 14),
+      name: uniqueName,
       skinId: p.skinId || 'cyber_cube',
       color: assignedColor,
       isBot: false,
