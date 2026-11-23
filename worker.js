@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.8.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v1.9.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -840,9 +840,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
       </div>
     </div>
 
-    <div style="margin-top:16px;display:flex;gap:10px;">
-      <button class="btn btn-primary" id="btn-lobby-start" style="margin-bottom:0;">🚀 Start Match Now</button>
-      <button class="btn btn-pink" id="btn-lobby-leave">Leave</button>
+    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
+      <button class="btn btn-primary" id="btn-lobby-start" style="margin-bottom:0;flex:1;">🚀 Start Match Now</button>
+      <button class="btn btn-pink" id="btn-lobby-leave" style="flex:1;min-width:160px;">🏠 بازگشت به منوی اصلی</button>
     </div>
   </div>
 </div>
@@ -2626,8 +2626,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
   document.getElementById('btn-lobby-start').addEventListener('click', () => pollLobby('start'));
   document.getElementById('btn-lobby-copy').addEventListener('click', copyInviteLink);
   document.getElementById('btn-lobby-leave').addEventListener('click', () => {
+    sfx.playClick();
     clearInterval(lobbyTimer);
     lobbyTimer = null;
+    state.isLobbyHost = false;
+    state.roomCode = 'PUBLIC';
+    window.history.replaceState({}, '', window.location.pathname);
+    document.getElementById('invite-banner').classList.add('hidden');
     document.getElementById('lobby-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
   });
@@ -2722,7 +2727,7 @@ const BOT_SKINS = [
 const rooms = new Map();
 let memoryLeaderboard = [];
 
-const APP_VERSION = 'v1.8.0';
+const APP_VERSION = 'v1.9.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
