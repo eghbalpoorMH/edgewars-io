@@ -707,7 +707,7 @@
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v2.0.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v2.1.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1885,13 +1885,19 @@
 
       if (state.needsSpawnSync && data.assignedSpawn && state.me) {
         state.needsSpawnSync = false;
-        territory.fill(null);
-        state.me.x = data.assignedSpawn.x;
-        state.me.y = data.assignedSpawn.y;
-        state.me.trail = [];
-        state.camera.x = data.assignedSpawn.x;
-        state.camera.y = data.assignedSpawn.y;
-        claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
+        let myCount = 0;
+        for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) if (territory[i] === state.playerId) myCount++;
+        if (myCount <= 25 && state.me.trail.length === 0) {
+          for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+            if (territory[i] === state.playerId) territory[i] = null;
+          }
+          state.me.x = data.assignedSpawn.x;
+          state.me.y = data.assignedSpawn.y;
+          state.me.trail = [];
+          state.camera.x = data.assignedSpawn.x;
+          state.camera.y = data.assignedSpawn.y;
+          claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
+        }
       }
 
       if (data.status === 'finished' && data.winner) {
@@ -1995,7 +2001,7 @@
         for (const [cellIndex, ownerId] of data.territoryOwners) {
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
             const ownerEnt = state.entities.get(ownerId);
-            if (ownerId && ownerId !== state.playerId && !(ownerEnt && ownerEnt.isBot)) {
+            if (ownerEnt && !ownerEnt.isBot && ownerEnt.alive && ownerId !== state.playerId) {
               territory[cellIndex] = ownerId;
             }
           }
@@ -2030,11 +2036,20 @@
 
   function spawnOfflineBots() {
     const needed = state.botsEnabled ? 11 : 0;
+    const archetypes = ['HUNTER', 'DAREDEVIL', 'TURTLE', 'CORNER_BARON', 'OPPORTUNIST'];
+    const usedColors = new Set([state.selectedColor]);
+    for (const ent of state.entities.values()) {
+      if (ent.skin && ent.skin.color) usedColors.add(ent.skin.color);
+    }
     for (let i = 0; i < needed; i++) {
       const id = 'bot_' + i;
       if (!state.entities.has(id)) {
-        const skin = SKINS[(i + 1) % SKINS.length];
-        state.entities.set(id, createEntity(id, BOT_NAMES[i % BOT_NAMES.length], skin, true));
+        const baseSkin = SKINS[(i + 1) % SKINS.length];
+        const col = PALETTE_COLORS.find((c) => !usedColors.has(c)) || baseSkin.color;
+        usedColors.add(col);
+        const ent = createEntity(id, BOT_NAMES[i % BOT_NAMES.length], { ...baseSkin, color: col }, true);
+        ent.archetype = archetypes[i % archetypes.length];
+        state.entities.set(id, ent);
       }
     }
   }
@@ -2695,7 +2710,14 @@
     sfx.playClick();
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
-    loadGlobalLeaderboard();
+    window.__EDGEWARS__ = {
+    state, territory, trailGrid, GRID_SIZE, CELL_SIZE,
+    cellIdx, inBounds, startMatch, setDirection,
+    rebuildTrailGrid, stepLocalBot, stepEntityPhysics,
+    captureTerritory, pruneLocalDisconnectedTerritory, syncWithEdge
+  };
+
+  loadGlobalLeaderboard();
   });
 
   function updateMuteButtons() {
@@ -2725,6 +2747,13 @@
     document.getElementById('invite-banner').classList.remove('hidden');
     openLobby(clean);
   }
+
+  window.__EDGEWARS__ = {
+    state, territory, trailGrid, GRID_SIZE, CELL_SIZE,
+    cellIdx, inBounds, startMatch, setDirection,
+    rebuildTrailGrid, stepLocalBot, stepEntityPhysics,
+    captureTerritory, pruneLocalDisconnectedTerritory, syncWithEdge
+  };
 
   loadGlobalLeaderboard();
 })();

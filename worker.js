@@ -713,7 +713,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
     <div class="header-row">
       <div class="logo-wrap">
         <h1>EdgeWars.io</h1>
-        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v2.0.0</span></p>
+        <p>2.5D Serverless Territory Warfare • ArvanCloud Edge • <span style="color:var(--accent-cyan);font-weight:700;">v2.1.0</span></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <a class="icon-btn" id="btn-github-link" href="https://github.com/eghbalpoorMH/edgewars-io" target="_blank" rel="noopener" style="text-decoration:none;">⭐ GitHub</a>
@@ -1891,13 +1891,19 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
       if (state.needsSpawnSync && data.assignedSpawn && state.me) {
         state.needsSpawnSync = false;
-        territory.fill(null);
-        state.me.x = data.assignedSpawn.x;
-        state.me.y = data.assignedSpawn.y;
-        state.me.trail = [];
-        state.camera.x = data.assignedSpawn.x;
-        state.camera.y = data.assignedSpawn.y;
-        claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
+        let myCount = 0;
+        for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) if (territory[i] === state.playerId) myCount++;
+        if (myCount <= 25 && state.me.trail.length === 0) {
+          for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+            if (territory[i] === state.playerId) territory[i] = null;
+          }
+          state.me.x = data.assignedSpawn.x;
+          state.me.y = data.assignedSpawn.y;
+          state.me.trail = [];
+          state.camera.x = data.assignedSpawn.x;
+          state.camera.y = data.assignedSpawn.y;
+          claimStartingBlock(state.me, data.assignedSpawn.gx, data.assignedSpawn.gy, true);
+        }
       }
 
       if (data.status === 'finished' && data.winner) {
@@ -2001,7 +2007,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
         for (const [cellIndex, ownerId] of data.territoryOwners) {
           if (inBounds(cellIndex % GRID_SIZE, (cellIndex / GRID_SIZE) | 0)) {
             const ownerEnt = state.entities.get(ownerId);
-            if (ownerId && ownerId !== state.playerId && !(ownerEnt && ownerEnt.isBot)) {
+            if (ownerEnt && !ownerEnt.isBot && ownerEnt.alive && ownerId !== state.playerId) {
               territory[cellIndex] = ownerId;
             }
           }
@@ -2036,11 +2042,20 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
   function spawnOfflineBots() {
     const needed = state.botsEnabled ? 11 : 0;
+    const archetypes = ['HUNTER', 'DAREDEVIL', 'TURTLE', 'CORNER_BARON', 'OPPORTUNIST'];
+    const usedColors = new Set([state.selectedColor]);
+    for (const ent of state.entities.values()) {
+      if (ent.skin && ent.skin.color) usedColors.add(ent.skin.color);
+    }
     for (let i = 0; i < needed; i++) {
       const id = 'bot_' + i;
       if (!state.entities.has(id)) {
-        const skin = SKINS[(i + 1) % SKINS.length];
-        state.entities.set(id, createEntity(id, BOT_NAMES[i % BOT_NAMES.length], skin, true));
+        const baseSkin = SKINS[(i + 1) % SKINS.length];
+        const col = PALETTE_COLORS.find((c) => !usedColors.has(c)) || baseSkin.color;
+        usedColors.add(col);
+        const ent = createEntity(id, BOT_NAMES[i % BOT_NAMES.length], { ...baseSkin, color: col }, true);
+        ent.archetype = archetypes[i % archetypes.length];
+        state.entities.set(id, ent);
       }
     }
   }
@@ -2701,7 +2716,14 @@ const HTML_CONTENT = `<!DOCTYPE html>
     sfx.playClick();
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('start-screen').classList.remove('hidden');
-    loadGlobalLeaderboard();
+    window.__EDGEWARS__ = {
+    state, territory, trailGrid, GRID_SIZE, CELL_SIZE,
+    cellIdx, inBounds, startMatch, setDirection,
+    rebuildTrailGrid, stepLocalBot, stepEntityPhysics,
+    captureTerritory, pruneLocalDisconnectedTerritory, syncWithEdge
+  };
+
+  loadGlobalLeaderboard();
   });
 
   function updateMuteButtons() {
@@ -2731,6 +2753,13 @@ const HTML_CONTENT = `<!DOCTYPE html>
     document.getElementById('invite-banner').classList.remove('hidden');
     openLobby(clean);
   }
+
+  window.__EDGEWARS__ = {
+    state, territory, trailGrid, GRID_SIZE, CELL_SIZE,
+    cellIdx, inBounds, startMatch, setDirection,
+    rebuildTrailGrid, stepLocalBot, stepEntityPhysics,
+    captureTerritory, pruneLocalDisconnectedTerritory, syncWithEdge
+  };
 
   loadGlobalLeaderboard();
 })();
@@ -2770,7 +2799,7 @@ const BOT_SKINS = [
 const rooms = new Map();
 let memoryLeaderboard = [];
 
-const APP_VERSION = 'v2.0.0';
+const APP_VERSION = 'v2.1.0';
 
 const telemetry = {
   dayKey: new Date().toISOString().slice(0, 10),
@@ -3163,217 +3192,22 @@ function findNearestTrailTarget(room, bot, gx, gy, maxRadius) {
 }
 
 function stepRoomBots(room, now) {
-  const dt = Math.min(0.25, (now - room.lastStep) / 1000);
+  // Bots are simulated authoritatively at 60 FPS on clients to prevent multi-isolate split-brain & phantom kills.
+  // Server maintains human players' territories cleanly.
   room.lastStep = now;
-  if (dt <= 0) return;
+  room.bots = [];
 
-  const realCount = room.players.size;
-  const desiredBots = room.code.startsWith('PUBLIC')
-    ? (room.botsEnabled ? Math.max(0, MAX_ROOM_ENTITIES - realCount) : 0)
-    : Math.min(room.settings ? room.settings.botCount : 0, Math.max(0, MAX_PRIVATE_ROOM_ENTITIES - realCount));
-
-  while (room.bots.length < desiredBots) {
-    const safe = findSafeSpawnInRoom(room);
-    const bot = createBot(room.bots.length, room.settings ? room.settings.aggression : 'mixed');
-    bot.color = getUnusedColorInRoom(room, bot.id);
-    bot.x = (safe.gx + 0.5) * CELL_SIZE;
-    bot.y = (safe.gy + 0.5) * CELL_SIZE;
-    claimSafeBaseInRoom(room, bot.id, safe.gx, safe.gy);
-    room.bots.push(bot);
-  }
-  if (room.bots.length > desiredBots) {
-    const removed = room.bots.splice(desiredBots);
-    for (const b of removed) {
-      for (const [k, v] of room.territory) {
-        if (v === b.id) room.territory.delete(k);
-      }
-    }
-  }
-
-  for (const bot of room.bots) {
-    if (!bot.alive) continue;
-    bot.turnTimer -= dt;
-    const gx = Math.floor(bot.x / CELL_SIZE);
-    const gy = Math.floor(bot.y / CELL_SIZE);
-    const onOwn = room.territory.get(gy * GRID_SIZE + gx) === bot.id;
-
-    // Check if next cell is unsafe
-    const aheadUnsafe = !isSafeBotCell(room, bot, gx + bot.dx, gy + bot.dy);
-
-    if (bot.turnTimer <= 0 || aheadUnsafe) {
-      // 1. HUNTER / OPPORTUNIST trail-hunting radar
-      const radar = bot.archetype === 'HUNTER' ? 14 : (bot.archetype === 'OPPORTUNIST' ? 7 : 0);
-      const prey = radar > 0 ? findNearestTrailTarget(room, bot, gx, gy, radar) : null;
-
-      if (prey && bot.trail.length < 18) {
-        const dirs = [
-          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
-          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
-        ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy) && isSafeBotCell(room, bot, gx + d.dx, gy + d.dy));
-        if (dirs.length > 0) {
-          dirs.sort((a, b) => (Math.abs(gx + a.dx - prey.x) + Math.abs(gy + a.dy - prey.y)) - (Math.abs(gx + b.dx - prey.x) + Math.abs(gy + b.dy - prey.y)));
-          bot.dx = dirs[0].dx;
-          bot.dy = dirs[0].dy;
-          bot.turnTimer = 0.25;
-        }
-      } else if (!onOwn && bot.trail.length > (bot.archetype === 'DAREDEVIL' ? 22 : (bot.archetype === 'TURTLE' ? 5 : 11))) {
-        // 2. Return home to flood-fill!
-        const homeDir = findNearestOwnedDir(room, bot, gx, gy);
-        if (homeDir) {
-          bot.dx = homeDir.dx;
-          bot.dy = homeDir.dy;
-          bot.turnTimer = 0.28;
-        }
-      } else if (!bot.planDirs || bot.planDirs.length === 0) {
-        // 3. Plan expansion loop based on archetype
-        const dirs = [
-          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
-          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
-        ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy) && isSafeBotCell(room, bot, gx + d.dx, gy + d.dy));
-
-        if (dirs.length > 0) {
-          let d1 = dirs[Math.floor(Math.random() * dirs.length)];
-          if (bot.archetype === 'CORNER_BARON') {
-            // Bias toward nearest corner
-            const cx = gx < GRID_SIZE / 2 ? -1 : 1;
-            const cy = gy < GRID_SIZE / 2 ? -1 : 1;
-            const cornerPick = dirs.find((d) => d.dx === cx || d.dy === cy);
-            if (cornerPick) d1 = cornerPick;
-          }
-          const perp = d1.dx !== 0
-            ? [{ dx: 0, dy: 1 }, { dx: 0, dy: -1 }]
-            : [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }];
-          const d2 = perp[Math.floor(Math.random() * 2)];
-          bot.planDirs = [d1, d2, { dx: -d1.dx, dy: -d1.dy }, { dx: -d2.dx, dy: -d2.dy }];
-        }
-      }
-
-      if (bot.planDirs && bot.planDirs.length > 0 && !prey) {
-        const next = bot.planDirs.shift();
-        if (!(next.dx === -bot.dx && next.dy === -bot.dy) && isSafeBotCell(room, bot, gx + next.dx, gy + next.dy)) {
-          bot.dx = next.dx;
-          bot.dy = next.dy;
-        }
-        const legTime = bot.archetype === 'DAREDEVIL' ? 1.15 : (bot.archetype === 'TURTLE' ? 0.35 : 0.65);
-        bot.turnTimer = legTime + Math.random() * 0.45;
-      }
-
-      // Guaranteed wall-escape fallback: never stay pointed into a wall or unsafe cell
-      if (!isSafeBotCell(room, bot, gx + bot.dx, gy + bot.dy)) {
-        bot.planDirs = [];
-        const fallbackDirs = [
-          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
-          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
-        ].filter((d) => !(d.dx === -bot.dx && d.dy === -bot.dy) && isSafeBotCell(room, bot, gx + d.dx, gy + d.dy));
-        if (fallbackDirs.length > 0) {
-          const pick = fallbackDirs[Math.floor(Math.random() * fallbackDirs.length)];
-          bot.dx = pick.dx;
-          bot.dy = pick.dy;
-          bot.turnTimer = 0.4;
-        }
-      }
-    }
-
-    // Sub-stepped continuous movement so bots NEVER skip intermediate trail cells
-    const subSteps = Math.max(1, Math.ceil(dt / 0.04));
-    const subDt = dt / subSteps;
-    for (let s = 0; s < subSteps; s++) {
-      bot.x = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.x + bot.dx * PLAYER_SPEED * subDt));
-      bot.y = Math.max(CELL_SIZE, Math.min(WORLD_SIZE - CELL_SIZE, bot.y + bot.dy * PLAYER_SPEED * subDt));
-
-      const cgx = Math.floor(bot.x / CELL_SIZE);
-      const cgy = Math.floor(bot.y / CELL_SIZE);
-      const idx = cgy * GRID_SIZE + cgx;
-
-      // Check if bot crossed any player's trail on this sub-step
-      for (const p of room.players.values()) {
-        if (p.alive && p.trail.includes(idx)) {
-          p.alive = false;
-          p.killedBy = bot.name;
-          p.trail = [];
-          for (const [k, v] of room.territory) {
-            if (v === p.id) room.territory.delete(k);
-          }
-        }
-      }
-
-      if (room.territory.get(idx) === bot.id) {
-        if (bot.trail.length > 0) {
-          captureBotTerritory(room, bot);
-          pruneDisconnectedTerritory(room, bot.id, idx);
-        }
-      } else {
-        if (bot.trail[bot.trail.length - 1] !== idx) {
-          bot.trail.push(idx);
-        }
-      }
-    }
-  }
-
-  // Server-side trail collision detection
-  const trailOwnerMap = new Map();
-  for (const p of room.players.values()) {
-    if (!p.alive) continue;
-    for (const tIdx of p.trail) trailOwnerMap.set(tIdx, p.id);
-  }
-  for (const b of room.bots) {
-    if (!b.alive) continue;
-    for (const tIdx of b.trail) trailOwnerMap.set(tIdx, b.id);
-  }
-
-  for (let i = 0; i < room.bots.length; i++) {
-    const b = room.bots[i];
-    if (!b.alive) continue;
-    const bIdx = Math.floor(b.y / CELL_SIZE) * GRID_SIZE + Math.floor(b.x / CELL_SIZE);
-    const victimId = trailOwnerMap.get(bIdx);
-    if (victimId && victimId !== b.id) {
-      const vp = room.players.get(victimId);
-      if (vp && vp.alive) {
-        vp.alive = false;
-        vp.killedBy = b.name;
-        vp.trail = [];
-        for (const [k, v] of room.territory) {
-          if (v === vp.id) room.territory.delete(k);
-        }
-      } else {
-        const vbIdx = room.bots.findIndex((x) => x.id === victimId);
-        if (vbIdx !== -1) {
-          respawnBot(room, room.bots[vbIdx], vbIdx);
-        }
-      }
-    }
-  }
-
-  // Purge any orphaned territory cells belonging to dead/disconnected entities
   const aliveIds = new Set();
   for (const p of room.players.values()) {
     if (p.alive) aliveIds.add(p.id);
-  }
-  for (const b of room.bots) {
-    if (b.alive) aliveIds.add(b.id);
   }
   for (const [k, ownerId] of room.territory) {
     if (!aliveIds.has(ownerId)) {
       room.territory.delete(k);
     }
   }
-
-  // Enforce single connected territory component for ALL alive entities on server
   for (const oid of aliveIds) {
     pruneDisconnectedTerritory(room, oid);
-  }
-
-  // Eliminate/respawn any bot whose entire territory was swallowed (0 cells left)
-  const ownerCounts = new Map();
-  for (const oid of room.territory.values()) {
-    ownerCounts.set(oid, (ownerCounts.get(oid) || 0) + 1);
-  }
-  for (let i = 0; i < room.bots.length; i++) {
-    const b = room.bots[i];
-    if (b.alive && (ownerCounts.get(b.id) || 0) === 0) {
-      b.trail = [];
-      respawnBot(room, b, i);
-    }
   }
 }
 
